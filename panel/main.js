@@ -335,7 +335,6 @@ html[data-oc-surface="status"] .bx-status-provider-head { color: var(--oc-fg); f
 html[data-oc-surface="status"] .bx-status-name-wrap { display: flex; min-width: 0; align-items: center; gap: 8px; }
 html[data-oc-surface="status"] .bx-status-provider-icon { width: 14px; height: 14px; flex: none; color: var(--oc-muted); }
 html[data-oc-surface="status"] .bx-status-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-html[data-oc-surface="status"] .bx-status-plan { color: var(--oc-muted); font-size: 11px; font-weight: 400; white-space: nowrap; }
 html[data-oc-surface="status"] .bx-status-label-wrap { display: flex; min-width: 0; align-items: baseline; gap: 6px; overflow: hidden; }
 html[data-oc-surface="status"] .bx-status-label { color: var(--oc-muted); white-space: nowrap; }
 html[data-oc-surface="status"] .bx-status-reset { color: var(--oc-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -1,6 +1,6 @@
 {
   "name": "openchamber-balance",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "private": true,
   "type": "module",
   "description": "OpenChamber 余额与额度：清晰总览、中转站管理与可靠的手动刷新。",

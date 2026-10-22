@@ -338,7 +338,7 @@ const renderStatusProvider = (provider: Provider): HTMLElement => {
   const nameWrap = el('span', 'bx-status-name-wrap');
   if (provider.id === 'command-code') nameWrap.append(terminalBoxIcon());
   nameWrap.append(el('span', 'bx-status-name', provider.name));
-  if (provider.plan) nameWrap.append(el('span', 'bx-status-plan', provider.plan));
+  if (provider.plan) head.title = `${provider.name} · ${provider.plan}`;
   head.append(nameWrap);
   node.append(head);
 
