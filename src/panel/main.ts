@@ -7,6 +7,7 @@ import { changesRelayOrigin, normalizeRelayUrl } from '../shared/relay-url.ts';
 import { asNumber, parseProvider, parseRelay } from './data.ts';
 import { formatBalance, formatReset, formatTime } from './format.ts';
 import css from './style.css';
+import { COMMAND_CODE_ICON, STEPFUN_ICON } from './provider-icons.ts';
 import native from '../../ui/native.css';
 import { openManager } from '../../ui/navigation.ts';
 
@@ -294,16 +295,19 @@ const renderWindow = (window: UsageWindow): HTMLElement => {
   if (foot.childNodes.length) node.append(foot);
   return node;
 };
-const terminalBoxIcon = (): SVGSVGElement => {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('aria-hidden', 'true');
-  svg.setAttribute('fill', 'currentColor');
-  svg.setAttribute('class', 'bx-status-provider-icon');
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', 'M3 3H21C21.5523 3 22 3.44772 22 4V20C22 20.5523 21.5523 21 21 21H3C2.44772 21 2 20.5523 2 20V4C2 3.44772 2.44772 3 3 3ZM4 5V19H20V5H4ZM12 15H18V17H12V15ZM8.66685 12L5.83842 9.17157L7.25264 7.75736L11.4953 12L7.25264 16.2426L5.83842 14.8284L8.66685 12Z');
-  svg.append(path);
-  return svg;
+const providerIcon = (providerId: string): SVGSVGElement | null => {
+  const svg = providerId === 'command-code'
+    ? COMMAND_CODE_ICON
+    : providerId.startsWith('stepfun') ? STEPFUN_ICON : null;
+  if (!svg) return null;
+  const template = document.createElement('template');
+  template.innerHTML = svg;
+  const node = template.content.firstElementChild;
+  if (!(node instanceof SVGSVGElement)) return null;
+  node.setAttribute('class', 'bx-status-provider-icon');
+  node.setAttribute('aria-hidden', 'true');
+  node.setAttribute('focusable', 'false');
+  return node;
 };
 
 const formatStatusReset = (timestamp: number | null): string | null => {
@@ -336,7 +340,8 @@ const renderStatusProvider = (provider: Provider): HTMLElement => {
   node.setAttribute('aria-label', provider.name);
   const head = el('div', 'bx-status-row bx-status-provider-head');
   const nameWrap = el('span', 'bx-status-name-wrap');
-  if (provider.id === 'command-code') nameWrap.append(terminalBoxIcon());
+  const icon = providerIcon(provider.id);
+  if (icon) nameWrap.append(icon);
   nameWrap.append(el('span', 'bx-status-name', provider.name));
   if (provider.plan) head.title = `${provider.name} · ${provider.plan}`;
   head.append(nameWrap);
