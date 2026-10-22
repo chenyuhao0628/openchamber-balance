@@ -297,8 +297,8 @@ const renderWindow = (window: UsageWindow): HTMLElement => {
 const formatStatusReset = (timestamp: number | null): string | null => {
   if (!timestamp || !Number.isFinite(timestamp) || timestamp <= Date.now()) return null;
   return new Intl.DateTimeFormat(locale, {
-    month: 'numeric', day: 'numeric', weekday: 'short',
-    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    month: 'long', day: 'numeric', weekday: 'short',
+    hour: 'numeric', minute: '2-digit', hourCycle: 'h23',
   }).format(timestamp);
 };
 
@@ -329,12 +329,6 @@ const renderStatusProvider = (provider: Provider): HTMLElement => {
   head.append(nameWrap);
   node.append(head);
 
-  if (provider.balance && provider.balance.value !== null) {
-    node.append(statusRow('额度余额', formatBalance(provider.balance.value, provider.balance.unit, locale), {
-      title: provider.stale ? '上次成功查询的余额' : undefined,
-    }));
-  }
-
   for (const window of provider.windows) {
     const reset = formatReset(window.resetAt, locale);
     const compactReset = formatStatusReset(window.resetAt);
@@ -343,6 +337,12 @@ const renderStatusProvider = (provider: Provider): HTMLElement => {
       reset: compactReset ?? undefined,
       tone,
       title: [window.detail, reset].filter(Boolean).join(' · ') || undefined,
+    }));
+  }
+
+  if (provider.balance && provider.balance.value !== null) {
+    node.append(statusRow('额度余额', formatBalance(provider.balance.value, provider.balance.unit, locale), {
+      title: provider.stale ? '上次成功查询的余额' : undefined,
     }));
   }
 
