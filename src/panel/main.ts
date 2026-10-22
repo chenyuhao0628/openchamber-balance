@@ -1,6 +1,6 @@
 // Two host surfaces share rendering; the status bundle never mounts relay management.
 declare const IS_SECTION: boolean;
-import { connectHost, HostRequestError, type GuestRequestMethod } from '@openchamber/sdk';
+import { connectHost, HostRequestError, type GuestRequestMethod, type GuestStatusControl } from '@openchamber/sdk';
 import { applyHostReady, mountButton, mountTabs, mountTextField, mountSpinner } from '@openchamber/sdk/ui';
 import type { Provider, PublicRelay, UsageWindow } from '../shared/types.ts';
 import { changesRelayOrigin, normalizeRelayUrl } from '../shared/relay-url.ts';
@@ -45,6 +45,19 @@ let formKey = '';
 let showKey = false;
 let notice: { text: string; tone: 'success' | 'error' } | null = null;
 let navigationMessage: string | null = null;
+let statusControlsSupported = false;
+let statusControlSignature = '';
+
+const refreshBalances = (): void => { notice = null; void loadBalances(true); };
+const openBalanceManager = (): void => {
+  void openManager(host, { id: 'balance', name: '余额' }).catch((error) => { navigationMessage = error.message; render(); });
+};
+if (IS_SECTION) {
+  host.onStatusControl((event) => {
+    if (event.id === 'refresh') refreshBalances();
+    else if (event.id === 'manage') openBalanceManager();
+  });
+}
 
 const describeError = (error: unknown): string => {
   if (error instanceof HostRequestError) {
@@ -83,10 +96,8 @@ const time = el('span', 'bx-time');
 time.setAttribute('role', 'status');
 meta.append(count, time);
 const toolbarActions = el('div', 'bx-actions');
-const refresh = mountButton(toolbarActions, { label: '刷新', variant: 'ghost', size: 'sm', onClick: () => { notice = null; void loadBalances(true); } });
-if (IS_SECTION) mountButton(toolbarActions, { label: '管理', variant: 'ghost', size: 'sm', onClick: () => {
-  void openManager(host, { id: 'balance', name: '余额' }).catch(error => { navigationMessage = error.message; render(); });
-} });
+const refresh = mountButton(toolbarActions, { label: '刷新', variant: 'ghost', size: 'sm', onClick: refreshBalances });
+if (IS_SECTION) mountButton(toolbarActions, { label: '管理', variant: 'ghost', size: 'sm', onClick: openBalanceManager });
 toolbar.append(meta, toolbarActions);
 top.append(toolbar);
 const overview = el('section', 'bx-view');
@@ -139,7 +150,8 @@ const tabs = !IS_SECTION ? mountTabs(tabRoot, { items: [{ id: 'overview', label:
   if (activeView === 'relays') void loadRelays();
 } }) : null;
 if (!IS_SECTION) top.prepend(tabRoot);
-app.append(top, overview);
+if (!IS_SECTION) app.append(top);
+app.append(overview);
 if (!IS_SECTION) app.append(management);
 root.append(app);
 
@@ -282,6 +294,70 @@ const renderWindow = (window: UsageWindow): HTMLElement => {
   if (foot.childNodes.length) node.append(foot);
   return node;
 };
+const formatStatusReset = (timestamp: number | null): string | null => {
+  if (!timestamp || !Number.isFinite(timestamp) || timestamp <= Date.now()) return null;
+  return new Intl.DateTimeFormat(locale, {
+    month: 'numeric', day: 'numeric', weekday: 'short',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).format(timestamp);
+};
+
+const statusRow = (
+  label: string,
+  value: string,
+  options: { reset?: string; title?: string; tone?: 'warning' | 'error'; muted?: boolean } = {},
+): HTMLElement => {
+  const row = el('div', 'bx-status-row');
+  if (options.title) row.title = options.title;
+  const labelWrap = el('span', 'bx-status-label-wrap');
+  labelWrap.append(el('span', 'bx-status-label', label));
+  if (options.reset) labelWrap.append(el('span', 'bx-status-reset', options.reset));
+  const valueNode = el('span', 'bx-status-value', value);
+  if (options.tone) valueNode.dataset.tone = options.tone;
+  if (options.muted) valueNode.dataset.muted = 'true';
+  row.append(labelWrap, valueNode);
+  return row;
+};
+
+const renderStatusProvider = (provider: Provider): HTMLElement => {
+  const node = el('article', 'bx-status-provider');
+  node.setAttribute('aria-label', provider.name);
+  const head = el('div', 'bx-status-row bx-status-provider-head');
+  const nameWrap = el('span', 'bx-status-name-wrap');
+  nameWrap.append(el('span', 'bx-status-name', provider.name));
+  if (provider.plan) nameWrap.append(el('span', 'bx-status-plan', provider.plan));
+  head.append(nameWrap);
+  node.append(head);
+
+  if (provider.balance && provider.balance.value !== null) {
+    node.append(statusRow('额度余额', formatBalance(provider.balance.value, provider.balance.unit, locale), {
+      title: provider.stale ? '上次成功查询的余额' : undefined,
+    }));
+  }
+
+  for (const window of provider.windows) {
+    const reset = formatReset(window.resetAt, locale);
+    const compactReset = formatStatusReset(window.resetAt);
+    const tone = window.usedPercent >= 80 ? 'error' : window.usedPercent >= 50 ? 'warning' : undefined;
+    node.append(statusRow(window.label, `${Math.round(window.usedPercent)}%`, {
+      reset: compactReset ?? undefined,
+      tone,
+      title: [window.detail, reset].filter(Boolean).join(' · ') || undefined,
+    }));
+  }
+
+  if (!provider.ok) {
+    const error = el('div', 'bx-status-row bx-status-error', provider.error ?? '查询失败，请刷新重试。');
+    error.setAttribute('role', 'alert');
+    if (provider.stale && provider.updatedAt) error.title = `以上为 ${formatTime(provider.updatedAt, locale, true)} 的成功结果。`;
+    node.append(error);
+  } else if (!provider.balance && !provider.windows.length) {
+    node.append(el('div', 'bx-status-row bx-status-muted', '已连接，但接口暂未提供余额或额度。'));
+  }
+
+  return node;
+};
+
 const renderProvider = (provider: Provider): HTMLElement => {
   const node = el('article', 'bx-provider');
   node.setAttribute('aria-label', provider.name);
@@ -338,6 +414,22 @@ function renderRelays(): void {
     relayList.append(row);
   }
 }
+const syncStatusControls = (): void => {
+  if (!IS_SECTION || !statusControlsSupported) return;
+  const controls: GuestStatusControl[] = [
+    { kind: 'button', id: 'refresh', label: '刷新', disabled: loading || !initialized },
+    { kind: 'button', id: 'manage', label: '管理', disabled: !initialized },
+  ];
+  const signature = JSON.stringify(controls);
+  if (signature === statusControlSignature) return;
+  statusControlSignature = signature;
+  void host.setStatusControls(controls).catch(() => {
+    statusControlsSupported = false;
+    statusControlSignature = '';
+    if (!top.isConnected) app.prepend(top);
+  });
+};
+
 function render(): void {
   const errors = providers.filter((provider) => !provider.ok).length;
   count.textContent = IS_SECTION ? '' : `${providers.length} 个服务${errors ? ` · ${errors} 项待重试` : ''}`;
@@ -357,7 +449,8 @@ function render(): void {
     const pending = el('div', 'bx-loading'); mountSpinner(pending, { label: initialized ? '正在查询余额…' : '正在连接 OpenChamber…' }); list.append(pending);
   } else if (!providers.length) {
     list.append(empty(loadError ? '暂时无法读取余额' : '还没有可显示的余额', loadError ? '点击刷新重试，或检查扩展的本地服务权限。' : '在 OpenCode 配置 Command Code、StepFun，或添加中转站。', IS_SECTION ? undefined : () => openEditor('new')));
-  } else list.append(...providers.map(renderProvider));
+  } else list.append(...providers.map(IS_SECTION ? renderStatusProvider : renderProvider));
+  syncStatusControls();
   if (!IS_SECTION) {
     const signature = `${activeView}:${relays.length}`;
     if (signature !== tabSignature) {
@@ -408,6 +501,8 @@ host.onReady((context) => {
   // The interface copy is Chinese; date formatting follows the host's Chinese locale.
   locale = context.locale.startsWith('zh') ? context.locale : 'zh-CN';
   document.documentElement.lang = locale;
+  statusControlsSupported = IS_SECTION && context.features?.statusControls === true;
+  if (IS_SECTION && !statusControlsSupported && !top.isConnected) app.prepend(top);
   if (initialized) { render(); return; }
   initialized = true;
   void loadBalances();
