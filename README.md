@@ -162,7 +162,7 @@ npm test
 | `package.json` 的 `openchamber` 字段 | panel、statusSection、service 清单 |
 | `tests/` | Node 单元测试和隔离 HTTP 集成测试 |
 
-`npm test` 自动先构建，再运行 21 项回归测试；单独构建使用 `npm run build`，持续构建使用 `npm run watch`。CSS 编译进两份面板脚本，不依赖外部样式网络请求。
+`npm test` 自动先构建，再运行 21 项回归测试；单独构建使用 `npm run build`，持续构建使用 `npm run watch`。`npm run preview` 只在 `127.0.0.1` 服务构建产物，使用合成供应商数据，不读取真实凭据或余额。CSS 编译进两份面板脚本，不依赖外部样式网络请求。
 
 构建以退出码为准：失败时旧产物可能仍存在。完整的修改、验证、版本与重载步骤见本页“开发”与“安装与重载”。
 
