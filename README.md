@@ -1,5 +1,41 @@
 # openchamber-balance
 
+English | [简体中文](#简体中文)
+
+## English
+
+**Balance** brings AI service balances, quotas and reset times into one side panel and a compact Work Status section. It supports Command Code, StepFun and custom relay endpoints, keeps the last successful result when a refresh fails, and uses manual refresh instead of background polling.
+
+### Highlights
+
+- Command Code, StepFun and custom relay balances in one overview.
+- Used quota, remaining quota and reset time; amounts are right-aligned and currencies stay separate.
+- Relay management with a connection test before saving.
+- Cached results, merged concurrent refreshes and immediate cache invalidation after a relay change.
+- Light, dark and narrow layouts that follow the host theme.
+
+### Screenshot
+
+<img src="docs/screenshots/panel.jpg" alt="Balance panel" width="420">
+
+*Synthetic preview with sample providers. No real account, credential or key is used.*
+
+### Install
+
+In OpenChamber, open **Settings → Extensions → Add extension** and paste:
+
+```text
+https://github.com/chenyuhao0628/openchamber-balance
+```
+
+Requires OpenChamber **1.24.0 or newer**; tested on 2.5.0. The extension runs a local service on `127.0.0.1` and checks the host Bearer token. Saved relay keys are never returned by the list or balance APIs.
+
+> The panel UI is currently Chinese. The full Chinese documentation is below.
+
+---
+
+## 简体中文
+
 OpenChamber 余额扩展，在**工作状态分区**与右侧「**余额**」面板中汇总 AI 服务的余额、额度和重置时间。
 
 当前版本 **0.2.9**，本说明于 **2026-10-22** 对照源码和本机宿主核对。清单声明宿主版本 `>=1.24.0`，SDK 依赖为 **2.5.0**；这些声明不等于已测试所有宿主版本。
@@ -125,5 +161,9 @@ npm test
 `npm test` 自动先构建，再运行 21 项回归测试；单独构建使用 `npm run build`，持续构建使用 `npm run watch`。CSS 编译进两份面板脚本，不依赖外部样式网络请求。
 
 构建以退出码为准：失败时旧产物可能仍存在。完整的修改、验证、版本与重载步骤见本页“开发”与“安装与重载”。
+
+## License
+
+MIT. See [LICENSE](LICENSE).
 
 返回[本仓库首页](README.md)。
