@@ -20,6 +20,10 @@ English | [简体中文](#简体中文)
 
 *Synthetic preview with sample providers. No real account, credential or key is used.*
 
+<img src="docs/screenshots/status.jpg" alt="Balance Work Status section" width="420">
+
+*The compact Work Status section.*
+
 ### Install
 
 In OpenChamber, open **Settings → Extensions → Add extension** and paste:
