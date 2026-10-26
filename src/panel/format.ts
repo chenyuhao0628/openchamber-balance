@@ -15,6 +15,15 @@ export const formatReset = (timestamp: number | null, locale = 'zh-CN', now = Da
   return `${prefix}${formatTime(timestamp, locale, !prefix)} 重置`;
 };
 
+export const formatStatusReset = (timestamp: number | null, locale = 'zh-CN', now = Date.now()): string | null => {
+  if (!timestamp || !Number.isFinite(timestamp) || timestamp <= now) return null;
+  const sameDay = new Date(timestamp).toDateString() === new Date(now).toDateString();
+  return new Intl.DateTimeFormat(locale, sameDay
+    ? { hour: 'numeric', minute: '2-digit', hourCycle: 'h23' }
+    : { month: 'short', day: 'numeric', weekday: 'short', hour: 'numeric', minute: '2-digit', hourCycle: 'h23' },
+  ).format(timestamp);
+};
+
 export const formatBalance = (value: number | null, unit: string, locale = 'zh-CN'): string => {
   if (value === null || !Number.isFinite(value)) return '—';
   const currency = unit === 'USD' || unit === '$' ? 'USD' : unit === 'CNY' || unit === '¥' ? 'CNY' : null;

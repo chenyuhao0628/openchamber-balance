@@ -64,26 +64,26 @@
 .bx-form-actions { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 4px; }
 .bx-form-actions .oc-sdk-btn { min-width: 84px; }
 .bx-sr { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-html[data-oc-surface="status"] { --bx-bg: color-mix(in srgb, var(--surface-muted, transparent) 40%, var(--surface-background, transparent)); height: auto; }
-html[data-oc-surface="status"] body { overflow: auto; height: auto; }
+html[data-oc-surface="status"] { --bx-bg: transparent; height: auto; background: transparent; }
+html[data-oc-surface="status"] body { overflow: auto; height: auto; background: transparent; }
 html[data-oc-surface="status"] #root, html[data-oc-surface="status"] .bx { height: auto; }
 html[data-oc-surface="status"] .bx-top { padding: 0 2px 2px; border: 0; }
 html[data-oc-surface="status"] .bx-view { padding: 0; overflow: visible; flex: none; }
 html[data-oc-surface="status"] .bx-status-provider { padding: 0; }
-html[data-oc-surface="status"] .bx-status-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; padding: 0 4px; border-radius: 6px; font-size: 13px; line-height: 1.45; }
+html[data-oc-surface="status"] .bx-status-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; padding: 0; border-radius: 6px; font-size: 13px; }
 html[data-oc-surface="status"] .bx-status-provider-head { color: var(--oc-fg); font-weight: 600; }
-html[data-oc-surface="status"] .bx-status-name-wrap { display: flex; min-width: 0; align-items: center; gap: 8px; }
-html[data-oc-surface="status"] .bx-status-provider-icon { width: 14px; height: 14px; flex: none; color: var(--oc-muted); }
-html[data-oc-surface="status"] .bx-status-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-html[data-oc-surface="status"] .bx-status-label-wrap { display: flex; min-width: 0; align-items: baseline; gap: 6px; overflow: hidden; }
-html[data-oc-surface="status"] .bx-status-label { color: var(--oc-muted); white-space: nowrap; }
-html[data-oc-surface="status"] .bx-status-reset { color: var(--oc-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html[data-oc-surface="status"] .bx-status-name-wrap { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; }
+html[data-oc-surface="status"] .bx-status-provider-icon { width: 14px; height: 14px; flex: none; color: var(--oc-fg); }
+html[data-oc-surface="status"] .bx-status-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html[data-oc-surface="status"] .bx-status-label-wrap { display: flex; flex: 1; min-width: 0; align-items: baseline; gap: 6px; overflow: hidden; }
+html[data-oc-surface="status"] .bx-status-label { min-width: 0; color: var(--oc-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html[data-oc-surface="status"] .bx-status-reset { flex: none; color: var(--oc-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 html[data-oc-surface="status"] .bx-status-value { flex: none; color: var(--oc-muted); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 html[data-oc-surface="status"] .bx-status-value[data-tone="warning"] { color: var(--oc-warning); }
 html[data-oc-surface="status"] .bx-status-value[data-tone="error"] { color: var(--oc-error); }
 html[data-oc-surface="status"] .bx-status-value[data-muted="true"] { color: var(--oc-muted); }
+html[data-oc-surface="status"] .bx-status-status { flex: none; max-width: calc(100% - 2rem); min-width: 0; color: var(--oc-muted); font-size: 13px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 html[data-oc-surface="status"] .bx-status-error { color: var(--oc-muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-html[data-oc-surface="status"] .bx-status-muted { color: var(--oc-muted); font-size: 13px; }
 html[data-oc-surface="status"] .bx-notice { margin: 2px 0 4px; padding: 0 4px; background: transparent; color: var(--oc-muted); font-size: 13px; }
 html[data-oc-surface="status"] .bx-notice[data-tone="error"] { background: transparent; color: var(--oc-muted); }
 html[data-oc-surface="status"] .bx-notice[data-tone="success"] { background: transparent; color: var(--oc-muted); }

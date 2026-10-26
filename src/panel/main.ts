@@ -5,7 +5,7 @@ import { applyHostReady, mountButton, mountTabs, mountTextField, mountSpinner } 
 import type { Provider, PublicRelay, UsageWindow } from '../shared/types.ts';
 import { changesRelayOrigin, normalizeRelayUrl } from '../shared/relay-url.ts';
 import { asNumber, parseProvider, parseRelay } from './data.ts';
-import { formatBalance, formatReset, formatTime } from './format.ts';
+import { formatBalance, formatReset, formatStatusReset, formatTime } from './format.ts';
 import css from './style.css';
 import { COMMAND_CODE_ICON, STEPFUN_ICON } from './provider-icons.ts';
 import native from '../../ui/native.css';
@@ -310,14 +310,6 @@ const providerIcon = (providerId: string): SVGSVGElement | null => {
   return node;
 };
 
-const formatStatusReset = (timestamp: number | null): string | null => {
-  if (!timestamp || !Number.isFinite(timestamp) || timestamp <= Date.now()) return null;
-  return new Intl.DateTimeFormat(locale, {
-    month: 'long', day: 'numeric', weekday: 'short',
-    hour: 'numeric', minute: '2-digit', hourCycle: 'h23',
-  }).format(timestamp);
-};
-
 const statusRow = (
   label: string,
   value: string,
@@ -343,13 +335,28 @@ const renderStatusProvider = (provider: Provider): HTMLElement => {
   const icon = providerIcon(provider.id);
   if (icon) nameWrap.append(icon);
   nameWrap.append(el('span', 'bx-status-name', provider.name));
-  if (provider.plan) head.title = `${provider.name} · ${provider.plan}`;
   head.append(nameWrap);
+
+  const hasData = Boolean(provider.balance || provider.windows.length);
+  const statusText = !provider.ok
+    ? provider.error ?? '查询失败，请刷新重试。'
+    : !hasData ? '已连接，但接口暂未提供余额或额度。' : null;
+  if (statusText) {
+    const status = el('span', 'bx-status-status', statusText);
+    status.title = statusText;
+    if (!provider.ok) {
+      status.setAttribute('role', 'alert');
+      if (provider.stale && provider.updatedAt) status.title = `${statusText} · 以上为 ${formatTime(provider.updatedAt, locale, true)} 的成功结果。`;
+    }
+    head.append(status);
+  }
+  const headTitle = [provider.plan, statusText].filter(Boolean).join(' · ');
+  if (headTitle) head.title = headTitle;
   node.append(head);
 
   for (const window of provider.windows) {
     const reset = formatReset(window.resetAt, locale);
-    const compactReset = formatStatusReset(window.resetAt);
+    const compactReset = formatStatusReset(window.resetAt, locale);
     const tone = window.usedPercent >= 80 ? 'error' : window.usedPercent >= 50 ? 'warning' : undefined;
     node.append(statusRow(window.label, `${Math.round(window.usedPercent)}%`, {
       reset: compactReset ?? undefined,
@@ -367,13 +374,11 @@ const renderStatusProvider = (provider: Provider): HTMLElement => {
     }));
   }
 
-  if (!provider.ok) {
+  if (!provider.ok && hasData) {
     const error = el('div', 'bx-status-row bx-status-error', provider.error ?? '查询失败，请刷新重试。');
     error.setAttribute('role', 'alert');
     if (provider.stale && provider.updatedAt) error.title = `以上为 ${formatTime(provider.updatedAt, locale, true)} 的成功结果。`;
     node.append(error);
-  } else if (!provider.balance && !provider.windows.length) {
-    node.append(el('div', 'bx-status-row bx-status-muted', '已连接，但接口暂未提供余额或额度。'));
   }
 
   return node;

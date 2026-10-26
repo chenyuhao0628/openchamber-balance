@@ -32,7 +32,7 @@ In OpenChamber, open **Settings → Extensions → Add extension** and paste:
 https://github.com/chenyuhao0628/openchamber-balance
 ```
 
-Requires OpenChamber **1.24.0 or newer**; tested on 2.5.0. The extension runs a local service on `127.0.0.1` and checks the host Bearer token. Saved relay keys are never returned by the list or balance APIs.
+Requires OpenChamber **1.24.0 or newer**; tested on 2.5.2. The extension runs a local service on `127.0.0.1` and checks the host Bearer token. Saved relay keys are never returned by the list or balance APIs.
 
 > The panel UI is currently Chinese. The full Chinese documentation is below.
 
@@ -42,21 +42,31 @@ Requires OpenChamber **1.24.0 or newer**; tested on 2.5.0. The extension runs a 
 
 OpenChamber 余额扩展，在**工作状态分区**与右侧「**余额**」面板中汇总 AI 服务的余额、额度和重置时间。
 
-当前版本 **0.2.9**，本说明于 **2026-10-22** 对照源码和本机宿主核对。清单声明宿主版本 `>=1.24.0`，SDK 依赖为 **2.5.0**；这些声明不等于已测试所有宿主版本。
+当前版本 **0.2.10**，本说明于 **2026-10-26** 对照源码和本机宿主核对。清单声明宿主版本 `>=1.24.0`，SDK 依赖为 **2.5.2**；这些声明不等于已测试所有宿主版本。
 
 ## 使用体验
 
-0.2.9 将工作状态分区对齐宿主内置「用量」：刷新与管理进入分区标题行，正文改为紧凑行式布局，使用 13px 标签/数值和 28px 行高，去掉大号金额、卡片边框与进度条。完整侧栏面板保持原有总览与中转站管理。
+0.2.10 以宿主 **2.5.2** 的源码为基准，继续对齐工作状态分区正文：去掉 status iframe 自绘的浅色底块；抵消宿主 frame 的 4px 外边距后保持与内置「用量」相同的净 4px 缩进；provider 图标改用 foreground；今天重置只显示时间；无数据或失败状态移到 provider 行右侧。完整侧栏面板保持原有总览与中转站管理。
+
+0.2.10 同时核对了 2.5.2 新增的 `contributes.statusSection.source`。该接口由宿主直接绘制正文，但行模型只接受 Remixicon 图标和普通 muted 标签，不能保留品牌 logo、provider 名加粗或标题摘要；改用 source 会让正文离内置用量更远，因此继续保留 `entry` frame。源码对照结论和不可对齐项见[工作状态分区 UI 规范](STATUS-SECTION.md)。
+
+0.2.9 将工作状态分区改为紧凑行式布局，使用 13px 标签/数值和 28px 行高，去掉大号金额、卡片边框与进度条，并让刷新/管理进入分区标题行。
 
 0.2.2 进一步接入项目共享的 `ui/native.css`，统一基础主题、焦点、字号与减少动画规则；图标使用宿主已支持的 `bank-card`，避免未识别图标回退为默认扩展图标。业务接口和服务逻辑保持上一版行为。
 
 - 默认打开「总览」：服务名称、余额、已用额度与重置时间按固定层次展示，金额右对齐；不同币种分别显示。
 - 「中转站」独立管理连接，点击添加或编辑才出现表单，保存后返回总览。
 - 跟随 OpenChamber 的字体、色彩和控件风格，适配浅色、深色和窄侧栏。方向键可切换页签，Enter 可提交表单。
-- 工作状态分区与内置「用量」使用同一套标题行和行式布局，刷新/管理位于标题行；管理入口复用完整余额侧栏。无项目会话可直接点击右侧「余额」图标；原版宿主 2.4.0 的工作状态「管理」入口仍无响应，该限制暂时保留，原因见[已知限制](#已知限制)。
+- 工作状态分区正文与内置「用量」使用相同的行式布局、字号、行高和图标尺寸；标题行只能使用宿主提供的文字控件，无法复刻内置用量的“摘要 + 图标刷新”。刷新/管理位于标题行；管理入口复用完整余额侧栏。无项目会话可直接点击右侧「余额」图标；原版宿主 2.4.0 的工作状态「管理」入口仍无响应，该限制暂时保留，原因见[已知限制](#已知限制)。
 - 刷新失败时保留上次成功数据，并明确显示“上次余额”、错误原因和成功时间；未知余额显示 `—`。
 
 工作状态分区的结构、字体、图标、数据顺序和宿主 iframe 限制见[工作状态分区 UI 规范](STATUS-SECTION.md)。
+
+### 与内置「用量」的已知差异
+
+- 标题行：内置用量显示最小窗口摘要和图标刷新；扩展状态控件只有文字按钮/选择器，没有摘要和图标按钮。这是接口限制。
+- 失败与无数据：查询失败且已有历史数据时，余额分区保留一条 muted 错误行并标明上次成功时间；内置用量主要依赖 provider 行 tooltip。保留显式提示是为了满足余额扩展的 stale 规则。
+- Provider 图标：仅对已支持的 Command Code、StepFun 使用品牌图标；自定义中转站没有可映射的宿主 logo，不伪造通用品牌图标。
 
 ## 支持的数据
 
@@ -162,7 +172,7 @@ npm test
 | `package.json` 的 `openchamber` 字段 | panel、statusSection、service 清单 |
 | `tests/` | Node 单元测试和隔离 HTTP 集成测试 |
 
-`npm test` 自动先构建，再运行 21 项回归测试；单独构建使用 `npm run build`，持续构建使用 `npm run watch`。`npm run preview` 只在 `127.0.0.1` 服务构建产物，使用合成供应商数据，不读取真实凭据或余额。CSS 编译进两份面板脚本，不依赖外部样式网络请求。
+`npm test` 自动先构建，再运行 22 项回归测试；单独构建使用 `npm run build`，持续构建使用 `npm run watch`。`npm run preview` 只在 `127.0.0.1` 服务构建产物，使用合成供应商数据，不读取真实凭据或余额。CSS 编译进两份面板脚本，不依赖外部样式网络请求。
 
 构建以退出码为准：失败时旧产物可能仍存在。完整的修改、验证、版本与重载步骤见本页“开发”与“安装与重载”。
 

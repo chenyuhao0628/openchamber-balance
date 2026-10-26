@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeRelayUrl, changesRelayOrigin } from '../src/shared/relay-url.ts';
 import { parseProvider } from '../src/panel/data.ts';
-import { formatBalance, formatReset } from '../src/panel/format.ts';
+import { formatBalance, formatReset, formatStatusReset } from '../src/panel/format.ts';
 
 test('normalizes copied API bases while retaining custom proxy paths', () => {
   assert.equal(normalizeRelayUrl(' relay.example.com/v1/ '), 'https://relay.example.com');
@@ -27,6 +27,14 @@ test('unknown money is not formatted as zero; long amounts have grouping', () =>
 test('expired reset dates ask for a refresh and unknown dates stay absent', () => {
   assert.equal(formatReset(100, 'zh-CN', 200), '重置时间已到，请刷新');
   assert.equal(formatReset(null), null);
+});
+test('status reset dates show time only today and a date on later days', () => {
+  const now = new Date(2026, 9, 26, 12, 0, 0).getTime();
+  assert.equal(formatStatusReset(new Date(2026, 9, 26, 15, 42).getTime(), 'zh-CN', now), '15:42');
+  const later = formatStatusReset(new Date(2026, 10, 1, 15, 52).getTime(), 'zh-CN', now);
+  assert.match(later ?? '', /11月1日/);
+  assert.match(later ?? '', /15:52/);
+  assert.equal(formatStatusReset(now - 1, 'zh-CN', now), null);
 });
 test('panel parser preserves stale metadata and drops invalid numeric values', () => {
   const parsed = parseProvider({ id: 'one', name: 'Fixture', ok: false, stale: true, updatedAt: 100, balance: { value: NaN, label: 'invalid', unit: 'USD' } });
