@@ -1,18 +1,22 @@
+import { sourceTranslate, type Translate } from '../shared/i18n.ts';
+
 export const formatTime = (timestamp: number, locale = 'zh-CN', date = false): string =>
   new Intl.DateTimeFormat(locale, {
     ...(date ? { month: 'numeric' as const, day: 'numeric' as const } : {}),
     hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   }).format(timestamp);
 
-export const formatReset = (timestamp: number | null, locale = 'zh-CN', now = Date.now()): string | null => {
+export const formatReset = (timestamp: number | null, locale = 'zh-CN', now = Date.now(), t: Translate = sourceTranslate): string | null => {
   if (!timestamp || !Number.isFinite(timestamp)) return null;
-  if (timestamp <= now) return '重置时间已到，请刷新';
+  if (timestamp <= now) return t('重置时间已到，请刷新');
   const target = new Date(timestamp);
   const today = new Date(now);
   const tomorrow = new Date(now);
   tomorrow.setDate(tomorrow.getDate() + 1);
-  const prefix = target.toDateString() === today.toDateString() ? '今天 ' : target.toDateString() === tomorrow.toDateString() ? '明天 ' : '';
-  return `${prefix}${formatTime(timestamp, locale, !prefix)} 重置`;
+  const time = formatTime(timestamp, locale, target.toDateString() !== today.toDateString() && target.toDateString() !== tomorrow.toDateString());
+  if (target.toDateString() === today.toDateString()) return t('今天 {time} 重置', { time });
+  if (target.toDateString() === tomorrow.toDateString()) return t('明天 {time} 重置', { time });
+  return t('{time} 重置', { time });
 };
 
 export const formatStatusReset = (timestamp: number | null, locale = 'zh-CN', now = Date.now()): string | null => {

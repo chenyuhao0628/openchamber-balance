@@ -25,6 +25,24 @@ var normalizeRelayUrl = (input) => {
   return `${url.origin}${pathname}`;
 };
 var changesRelayOrigin = (previous, next) => new URL(normalizeRelayUrl(previous)).origin !== new URL(normalizeRelayUrl(next)).origin;
+var normalizeEndpointUrl = (input) => {
+  const value = input.trim();
+  if (!value) throw new Error("\u8BF7\u586B\u5199\u63A5\u53E3\u5730\u5740");
+  let url;
+  try {
+    url = new URL(value.includes("://") ? value : `https://${value}`);
+  } catch {
+    throw new Error("\u8BF7\u8F93\u5165\u6709\u6548\u7684\u63A5\u53E3\u5730\u5740\uFF0C\u4F8B\u5982 https://api.example.com/v1/balance");
+  }
+  if (!["https:", "http:"].includes(url.protocol) || !url.hostname) {
+    throw new Error("\u63A5\u53E3\u5730\u5740\u4EC5\u652F\u6301 HTTP \u6216 HTTPS");
+  }
+  if (url.username || url.password || url.hash) {
+    throw new Error("\u63A5\u53E3\u5730\u5740\u4E0D\u80FD\u5305\u542B\u8D26\u53F7\u3001\u5BC6\u7801\u6216\u951A\u70B9");
+  }
+  return url.toString();
+};
+var changesEndpointOrigin = (previous, next) => new URL(normalizeEndpointUrl(previous)).origin !== new URL(normalizeEndpointUrl(next)).origin;
 
 // src/service/cache.ts
 var createBalanceCache = (load) => {
@@ -75,6 +93,142 @@ var failedProvider = (id, name, error, previous) => ({
   stale: previous?.updatedAt != null,
   error
 });
+
+// src/service/normalize.ts
+var asNumber = (value) => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+var clampPercent = (value) => Math.min(100, Math.max(0, value));
+var toTimestamp = (value) => {
+  const numeric = asNumber(value);
+  if (numeric !== null) {
+    if (numeric <= 0) return null;
+    return numeric < 1e12 ? numeric * 1e3 : numeric;
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+};
+var formatReset = (timestamp) => {
+  if (timestamp === null) return null;
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return null;
+  const now = /* @__PURE__ */ new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  return sameDay ? date.toLocaleTimeString(void 0, { hour: "2-digit", minute: "2-digit" }) : date.toLocaleString(void 0, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+};
+var makeWindow = (key, label, usedPercent, resetAtRaw, detail) => {
+  const used = clampPercent(usedPercent);
+  const resetAt = toTimestamp(resetAtRaw);
+  return {
+    key,
+    label,
+    usedPercent: used,
+    remainingPercent: clampPercent(100 - used),
+    resetAt,
+    resetAtText: formatReset(resetAt),
+    detail: detail ?? null
+  };
+};
+var windowFromCounts = (key, label, usedRaw, capRaw, resetAtRaw) => {
+  const used = asNumber(usedRaw);
+  const cap = asNumber(capRaw);
+  if (used === null || cap === null || cap <= 0) return null;
+  const round = (value) => (Math.round(value * 100) / 100).toString();
+  return makeWindow(key, label, used / cap * 100, resetAtRaw, `${round(used)} / ${round(cap)}`);
+};
+var moneyLabel = (value, unit) => {
+  const symbol = unit === "USD" || unit === "$" ? "$" : unit === "CNY" || unit === "\xA5" ? "\xA5" : "";
+  return symbol ? `${symbol}${value.toFixed(2)}` : `${Math.round(value * 10) / 10} ${unit}`;
+};
+var shortPlanLabel = (plan) => {
+  if (!plan) return null;
+  if (!/^[a-z0-9]+(?:[-_][a-z0-9]+)+$/i.test(plan)) return plan;
+  const last = plan.split(/[-_]/).pop() ?? plan;
+  return last.toUpperCase();
+};
+var makeBalance = (value, unit) => value === null ? null : { value, label: moneyLabel(value, unit), unit };
+
+// src/service/custom.ts
+var pathTokens = (path2) => {
+  const cleaned = path2.trim().replace(/^\$\.?/, "");
+  if (!cleaned) return [];
+  return cleaned.replace(/\[(\d+)\]/g, ".$1").split(".").filter((token2) => token2.length > 0);
+};
+var readPath = (value, path2) => {
+  let current = value;
+  for (const token2 of pathTokens(path2)) {
+    if (token2 === "__proto__" || token2 === "prototype" || token2 === "constructor") return void 0;
+    if (Array.isArray(current)) {
+      const index = Number(token2);
+      if (!Number.isInteger(index) || index < 0) return void 0;
+      current = current[index];
+    } else if (current && typeof current === "object") {
+      current = current[token2];
+    } else {
+      return void 0;
+    }
+  }
+  return current;
+};
+var textAt = (value, path2) => {
+  if (!path2.trim()) return null;
+  const found = readPath(value, path2);
+  return typeof found === "string" && found.trim() ? found.trim() : null;
+};
+var numberAt = (value, path2) => {
+  if (!path2.trim()) return null;
+  return asNumber(readPath(value, path2));
+};
+var validateCustomRequest = (request) => {
+  if (request.method !== "GET" && request.method !== "POST") throw new Error("\u8BF7\u6C42\u65B9\u5F0F\u5FC5\u987B\u662F GET \u6216 POST");
+  if (request.authHeader.trim().length > 100) throw new Error("\u8BA4\u8BC1\u8BF7\u6C42\u5934\u540D\u79F0\u8FC7\u957F");
+  if (request.headers.length > 8e3) throw new Error("\u989D\u5916\u8BF7\u6C42\u5934\u8FC7\u957F");
+  if (request.body.length > 16e3) throw new Error("\u8BF7\u6C42\u4F53\u8FC7\u957F");
+  if (request.method === "GET" && request.body.trim()) throw new Error("GET \u8BF7\u6C42\u4E0D\u80FD\u5305\u542B\u8BF7\u6C42\u4F53\u3002");
+  const { mapping } = request;
+  if (!mapping.balancePath.trim() && !mapping.usedPath.trim() && !mapping.limitPath.trim() && !mapping.usedPercentPath.trim()) {
+    throw new Error("\u8BF7\u81F3\u5C11\u586B\u5199\u4F59\u989D\u5B57\u6BB5\u6216\u989D\u5EA6\u5B57\u6BB5\u3002");
+  }
+  if (mapping.balancePath.length > 300 || mapping.usedPath.length > 300 || mapping.limitPath.length > 300 || mapping.usedPercentPath.length > 300 || mapping.resetAtPath.length > 300 || mapping.planPath.length > 300 || mapping.detailPath.length > 300) {
+    throw new Error("\u54CD\u5E94\u5B57\u6BB5\u8DEF\u5F84\u8FC7\u957F");
+  }
+  if (mapping.unit.length > 20) throw new Error("\u5355\u4F4D\u8FC7\u957F");
+  if (mapping.windowLabel.length > 40) throw new Error("\u989D\u5EA6\u7A97\u53E3\u540D\u79F0\u8FC7\u957F");
+};
+var parseCustomContribution = (body, mapping) => {
+  if (!body || typeof body !== "object") throw new Error("\u81EA\u5B9A\u4E49\u63A5\u53E3\u8FD4\u56DE\u7684\u4E0D\u662F JSON \u5BF9\u8C61");
+  const unit = mapping.unit.trim() || "USD";
+  const balance = numberAt(body, mapping.balancePath);
+  const plan = textAt(body, mapping.planPath);
+  const detail = textAt(body, mapping.detailPath);
+  const windows = [];
+  let usedPercent = numberAt(body, mapping.usedPercentPath);
+  let used = numberAt(body, mapping.usedPath);
+  let limit = numberAt(body, mapping.limitPath);
+  if (usedPercent === null && used !== null && limit !== null && limit > 0) usedPercent = used / limit * 100;
+  if (usedPercent !== null) {
+    const resetAt = mapping.resetAtPath.trim() ? readPath(body, mapping.resetAtPath) : null;
+    const countDetail = used !== null && limit !== null ? `${used} / ${limit}` : null;
+    windows.push(makeWindow("custom", mapping.windowLabel.trim() || "\u989D\u5EA6", usedPercent, resetAt, countDetail));
+  }
+  if (balance === null && windows.length === 0) {
+    throw new Error("\u81EA\u5B9A\u4E49\u63A5\u53E3\u6CA1\u6709\u53EF\u5C55\u793A\u7684\u4F59\u989D\u6216\u989D\u5EA6\uFF1B\u8BF7\u68C0\u67E5\u5B57\u6BB5\u8DEF\u5F84");
+  }
+  return {
+    plan,
+    balance: balance === null ? null : makeBalance(balance, unit),
+    detail,
+    windows
+  };
+};
 
 // src/service/main.ts
 var port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
@@ -159,10 +313,52 @@ var firstCredential = (credentials, ids) => {
   }
   return null;
 };
-var isRelay = (value) => {
-  if (!value || typeof value !== "object") return false;
+var storedText = (value, max, fallback = "") => {
+  if (value === void 0) return fallback;
+  if (typeof value !== "string" || value.length > max) throw new Error();
+  return value;
+};
+var parseStoredCustom = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
   const record = value;
-  return typeof record.id === "string" && typeof record.name === "string" && typeof record.baseUrl === "string" && typeof record.apiKey === "string";
+  const mappingRecord = record.mapping;
+  if (!mappingRecord || typeof mappingRecord !== "object" || Array.isArray(mappingRecord)) throw new Error();
+  const mapping = mappingRecord;
+  const method = record.method === "POST" ? "POST" : "GET";
+  const authScheme = record.authScheme === "raw" ? "raw" : "bearer";
+  return {
+    method,
+    authHeader: storedText(record.authHeader, 100),
+    authScheme,
+    headers: storedText(record.headers, 8e3),
+    body: storedText(record.body, 16e3),
+    mapping: {
+      balancePath: storedText(mapping.balancePath, 300),
+      unit: storedText(mapping.unit, 20, "USD") || "USD",
+      usedPath: storedText(mapping.usedPath, 300),
+      limitPath: storedText(mapping.limitPath, 300),
+      usedPercentPath: storedText(mapping.usedPercentPath, 300),
+      resetAtPath: storedText(mapping.resetAtPath, 300),
+      planPath: storedText(mapping.planPath, 300),
+      detailPath: storedText(mapping.detailPath, 300),
+      windowLabel: storedText(mapping.windowLabel, 40, "\u989D\u5EA6") || "\u989D\u5EA6"
+    }
+  };
+};
+var parseStoredRelay = (value) => {
+  if (!value || typeof value !== "object") throw new Error();
+  const record = value;
+  if (typeof record.id !== "string" || typeof record.name !== "string" || typeof record.baseUrl !== "string" || typeof record.apiKey !== "string") throw new Error();
+  const kind = record.kind === "custom" ? "custom" : "auto";
+  if (kind === "auto") return { id: record.id, name: record.name, baseUrl: record.baseUrl, apiKey: record.apiKey, kind };
+  return {
+    id: record.id,
+    name: record.name,
+    baseUrl: record.baseUrl,
+    apiKey: record.apiKey,
+    kind,
+    custom: parseStoredCustom(record.custom)
+  };
 };
 var RequestError = class extends Error {
   constructor(status, message) {
@@ -176,16 +372,16 @@ var readConfig = () => {
     raw = fs.readFileSync(CONFIG_FILE, "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return { relays: [] };
-    throw new RequestError(500, "\u65E0\u6CD5\u8BFB\u53D6\u4E2D\u8F6C\u7AD9\u914D\u7F6E\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u6743\u9650");
+    throw new RequestError(500, "\u65E0\u6CD5\u8BFB\u53D6\u63A5\u53E3\u914D\u7F6E\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u6743\u9650");
   }
   try {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
     const relays = parsed.relays ?? [];
-    if (!Array.isArray(relays) || !relays.every(isRelay)) throw new Error();
-    return { relays };
+    if (!Array.isArray(relays)) throw new Error();
+    return { relays: relays.map(parseStoredRelay) };
   } catch {
-    throw new RequestError(500, "\u4E2D\u8F6C\u7AD9\u914D\u7F6E\u683C\u5F0F\u6709\u8BEF\uFF0C\u8BF7\u4FEE\u590D config.json \u540E\u91CD\u8BD5\uFF1B\u73B0\u6709\u6587\u4EF6\u672A\u4FEE\u6539");
+    throw new RequestError(500, "\u63A5\u53E3\u914D\u7F6E\u683C\u5F0F\u6709\u8BEF\uFF0C\u8BF7\u4FEE\u590D config.json \u540E\u91CD\u8BD5\uFF1B\u73B0\u6709\u6587\u4EF6\u672A\u4FEE\u6539");
   }
 };
 var writeConfig = (config) => {
@@ -202,8 +398,8 @@ var writeConfig = (config) => {
     throw new RequestError(500, "\u4FDD\u5B58\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u914D\u7F6E\u76EE\u5F55\u7684\u5199\u5165\u6743\u9650");
   }
 };
-var fetchJson = async (url, headers, signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS)) => {
-  const response = await fetch(url, { headers, signal });
+var fetchJson = async (url, headers, signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS), init = {}) => {
+  const response = await fetch(url, { headers, signal, method: init.method, body: init.body });
   const text = await response.text();
   let body = null;
   try {
@@ -213,66 +409,6 @@ var fetchJson = async (url, headers, signal = AbortSignal.timeout(REQUEST_TIMEOU
   }
   return { status: response.status, ok: response.ok, body };
 };
-var asNumber = (value) => {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-};
-var clampPercent = (value) => Math.min(100, Math.max(0, value));
-var toTimestamp = (value) => {
-  const numeric = asNumber(value);
-  if (numeric !== null) {
-    if (numeric <= 0) return null;
-    return numeric < 1e12 ? numeric * 1e3 : numeric;
-  }
-  if (typeof value === "string") {
-    const parsed = Date.parse(value);
-    return Number.isNaN(parsed) ? null : parsed;
-  }
-  return null;
-};
-var formatReset = (timestamp) => {
-  if (timestamp === null) return null;
-  const date = new Date(timestamp);
-  if (!Number.isFinite(date.getTime())) return null;
-  const now = /* @__PURE__ */ new Date();
-  const sameDay = date.toDateString() === now.toDateString();
-  return sameDay ? date.toLocaleTimeString(void 0, { hour: "2-digit", minute: "2-digit" }) : date.toLocaleString(void 0, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-};
-var makeWindow = (key, label, usedPercent, resetAtRaw, detail) => {
-  const used = clampPercent(usedPercent);
-  const resetAt = toTimestamp(resetAtRaw);
-  return {
-    key,
-    label,
-    usedPercent: used,
-    remainingPercent: clampPercent(100 - used),
-    resetAt,
-    resetAtText: formatReset(resetAt),
-    detail: detail ?? null
-  };
-};
-var windowFromCounts = (key, label, usedRaw, capRaw, resetAtRaw) => {
-  const used = asNumber(usedRaw);
-  const cap = asNumber(capRaw);
-  if (used === null || cap === null || cap <= 0) return null;
-  const round = (value) => (Math.round(value * 100) / 100).toString();
-  return makeWindow(key, label, used / cap * 100, resetAtRaw, `${round(used)} / ${round(cap)}`);
-};
-var moneyLabel = (value, unit) => {
-  const symbol = unit === "USD" || unit === "$" ? "$" : unit === "CNY" || unit === "\xA5" ? "\xA5" : "";
-  return symbol ? `${symbol}${value.toFixed(2)}` : `${Math.round(value * 10) / 10} ${unit}`;
-};
-var shortPlanLabel = (plan) => {
-  if (!plan) return null;
-  if (!/^[a-z0-9]+(?:[-_][a-z0-9]+)+$/i.test(plan)) return plan;
-  const last = plan.split(/[-_]/).pop() ?? plan;
-  return last.toUpperCase();
-};
-var makeBalance = (value, unit) => value === null ? null : { value, label: moneyLabel(value, unit), unit };
 var COMMAND_CODE_HEADERS = {
   Accept: "application/json",
   "User-Agent": "command-code/0.40.0",
@@ -414,16 +550,57 @@ var fetchRelay = async (relay) => {
   }
   throw new Error([usage.status, subscription.status, newApi.status].includes(401) ? "\u8BA4\u8BC1\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5 API Key \u662F\u5426\u6709\u6548" : [usage.status, subscription.status, newApi.status].includes(403) ? "\u5F53\u524D Key \u6CA1\u6709\u67E5\u8BE2\u4F59\u989D\u7684\u6743\u9650" : "\u65E0\u6CD5\u8BC6\u522B\u4F59\u989D\u63A5\u53E3\uFF0C\u8BF7\u68C0\u67E5\u670D\u52A1\u5730\u5740\u53CA\u7AD9\u70B9\u662F\u5426\u652F\u6301\u4F59\u989D\u67E5\u8BE2");
 };
+var parseHeaderLines = (raw) => {
+  const headers = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const separator = trimmed.indexOf(":");
+    if (separator <= 0) throw new Error("\u989D\u5916\u8BF7\u6C42\u5934\u683C\u5F0F\u5E94\u4E3A Name: value");
+    const name = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim();
+    if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name) || /[\r\n]/.test(value)) {
+      throw new Error("\u989D\u5916\u8BF7\u6C42\u5934\u683C\u5F0F\u4E0D\u6B63\u786E");
+    }
+    headers[name] = value;
+  }
+  return headers;
+};
+var fetchCustom = async (relay) => {
+  const custom = relay.custom;
+  if (!custom) throw new Error("\u81EA\u5B9A\u4E49\u63A5\u53E3\u7F3A\u5C11\u8BF7\u6C42\u914D\u7F6E");
+  validateCustomRequest(custom);
+  const headers = { Accept: "application/json", ...parseHeaderLines(custom.headers) };
+  const authHeader = custom.authHeader.trim();
+  if (authHeader) headers[authHeader] = custom.authScheme === "bearer" ? `Bearer ${relay.apiKey}` : relay.apiKey;
+  if (custom.method === "POST" && custom.body.trim() && !Object.keys(headers).some((name) => name.toLowerCase() === "content-type")) {
+    headers["Content-Type"] = "application/json";
+  }
+  const answer = await fetchJson(relay.baseUrl, headers, void 0, {
+    method: custom.method,
+    body: custom.method === "POST" && custom.body.trim() ? custom.body : void 0
+  });
+  if (!answer.ok) throw new Error(`\u81EA\u5B9A\u4E49\u63A5\u53E3\u8FD4\u56DE HTTP ${answer.status}`);
+  return { ...parseCustomContribution(answer.body, custom.mapping), raw: answer.body };
+};
+var fetchConnection = (relay) => relay.kind === "custom" ? fetchCustom(relay) : fetchRelay(relay);
+var BUILTIN_PROVIDERS = [
+  { id: "command-code", name: "Command Code", credentialIds: ["command-code", "commandcode"], fetch: fetchCommandCode },
+  { id: "stepfun", name: "StepFun", credentialIds: ["stepfun-step-plan", "stepfun"], fetch: fetchStepfun }
+];
 var buildBalances = async (previous) => {
   const credentials = await readCredentials();
   const relays = readConfig().relays;
   const jobs = [
-    { id: "command-code", name: "Command Code", run: () => fetchCommandCode(firstCredential(credentials, ["command-code", "commandcode"])) },
-    { id: "stepfun", name: "StepFun", run: () => fetchStepfun(firstCredential(credentials, ["stepfun-step-plan", "stepfun"])) },
+    ...BUILTIN_PROVIDERS.map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      run: () => provider.fetch(firstCredential(credentials, provider.credentialIds))
+    })),
     ...relays.map((relay) => ({
       id: `relay:${relay.id}`,
       name: relay.name,
-      run: () => fetchRelay(relay)
+      run: () => fetchConnection(relay)
     }))
   ];
   const providers = await Promise.all(
@@ -484,29 +661,95 @@ var readBody = (req) => new Promise((resolve, reject) => {
     }
   });
 });
-var publicRelay = (relay) => ({ id: relay.id, name: relay.name, baseUrl: relay.baseUrl, hasKey: relay.apiKey.length > 0 });
+var redact = (text, secret) => secret ? text.split(secret).join("{key}") : text;
+var publicRelay = (relay) => ({
+  id: relay.id,
+  name: relay.name,
+  baseUrl: relay.baseUrl,
+  hasKey: relay.apiKey.length > 0,
+  kind: relay.kind ?? "auto",
+  ...relay.kind === "custom" && relay.custom ? {
+    custom: {
+      ...relay.custom,
+      headers: redact(relay.custom.headers, relay.apiKey),
+      body: redact(relay.custom.body, relay.apiKey)
+    }
+  } : {}
+});
 var field = (body, key, max) => {
   const value = typeof body[key] === "string" ? body[key].trim() : "";
   if (value.length > max) throw new RequestError(400, `${key} \u957F\u5EA6\u8D85\u51FA\u9650\u5236`);
   return value;
 };
+var nestedText = (record, key, max, fallback = "") => {
+  const value = record[key];
+  if (value === void 0) return fallback;
+  if (typeof value !== "string") throw new RequestError(400, `${key} \u5FC5\u987B\u662F\u6587\u672C`);
+  if (value.length > max) throw new RequestError(400, `${key} \u957F\u5EA6\u8D85\u51FA\u9650\u5236`);
+  return value;
+};
+var customRequest = (body, apiKey) => {
+  const raw = body.custom;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new RequestError(400, "\u7F3A\u5C11\u81EA\u5B9A\u4E49\u63A5\u53E3\u914D\u7F6E");
+  const record = raw;
+  const rawMapping = record.mapping;
+  if (!rawMapping || typeof rawMapping !== "object" || Array.isArray(rawMapping)) throw new RequestError(400, "\u7F3A\u5C11\u54CD\u5E94\u5B57\u6BB5\u6620\u5C04");
+  const mapping = rawMapping;
+  const request = {
+    method: record.method === "POST" ? "POST" : "GET",
+    authHeader: nestedText(record, "authHeader", 100, "Authorization").trim(),
+    authScheme: record.authScheme === "raw" ? "raw" : "bearer",
+    headers: nestedText(record, "headers", 8e3),
+    body: nestedText(record, "body", 16e3),
+    mapping: {
+      balancePath: nestedText(mapping, "balancePath", 300).trim(),
+      unit: nestedText(mapping, "unit", 20, "USD").trim() || "USD",
+      usedPath: nestedText(mapping, "usedPath", 300).trim(),
+      limitPath: nestedText(mapping, "limitPath", 300).trim(),
+      usedPercentPath: nestedText(mapping, "usedPercentPath", 300).trim(),
+      resetAtPath: nestedText(mapping, "resetAtPath", 300).trim(),
+      planPath: nestedText(mapping, "planPath", 300).trim(),
+      detailPath: nestedText(mapping, "detailPath", 300).trim(),
+      windowLabel: nestedText(mapping, "windowLabel", 40, "\u989D\u5EA6").trim() || "\u989D\u5EA6"
+    }
+  };
+  try {
+    validateCustomRequest(request);
+  } catch (error) {
+    throw new RequestError(400, error instanceof Error ? error.message : "\u81EA\u5B9A\u4E49\u63A5\u53E3\u914D\u7F6E\u4E0D\u6B63\u786E");
+  }
+  if (apiKey && (request.headers.includes(apiKey) || request.body.includes(apiKey))) {
+    throw new RequestError(400, "\u4E0D\u8981\u628A API Key \u5199\u8FDB\u989D\u5916\u8BF7\u6C42\u5934\u6216\u8BF7\u6C42\u4F53");
+  }
+  return request;
+};
 var resolveRelay = (body, config) => {
   const id = field(body, "id", 128);
   const stored = id ? config.relays.find((relay) => relay.id === id) : void 0;
-  if (id && !stored) throw new RequestError(404, "\u6B64\u4E2D\u8F6C\u7AD9\u5DF2\u79FB\u9664\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00\u7BA1\u7406\u9875\u9762");
+  if (id && !stored) throw new RequestError(404, "\u6B64\u63A5\u53E3\u5DF2\u79FB\u9664\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00\u7BA1\u7406\u9875\u9762");
+  const kind = body.kind === "custom" ? "custom" : "auto";
   let baseUrl;
   try {
-    baseUrl = normalizeRelayUrl(field(body, "baseUrl", 2048));
+    baseUrl = kind === "custom" ? normalizeEndpointUrl(field(body, "baseUrl", 4096)) : normalizeRelayUrl(field(body, "baseUrl", 2048));
   } catch (error) {
     throw new RequestError(400, describeError(error));
   }
   const typedKey = field(body, "apiKey", 4096);
-  if (!typedKey && stored && changesRelayOrigin(stored.baseUrl, baseUrl)) {
-    throw new RequestError(400, "\u66F4\u6362\u7AD9\u70B9\u5730\u5740\u65F6\uFF0C\u8BF7\u91CD\u65B0\u586B\u5199\u8BE5\u7AD9\u70B9\u7684 API Key");
+  const originChanged = stored ? stored.kind === "custom" || kind === "custom" ? changesEndpointOrigin(stored.baseUrl, baseUrl) : changesRelayOrigin(stored.baseUrl, baseUrl) : false;
+  if (!typedKey && stored && originChanged) {
+    throw new RequestError(400, "\u66F4\u6362\u63A5\u53E3\u5730\u5740\u65F6\uFF0C\u8BF7\u91CD\u65B0\u586B\u5199 API Key");
   }
   const apiKey = typedKey || stored?.apiKey || "";
   if (!apiKey) throw new RequestError(400, "\u8BF7\u586B\u5199 API Key");
-  return { id: stored?.id ?? randomUUID(), name: field(body, "name", 60), baseUrl, apiKey };
+  const custom = kind === "custom" ? customRequest(body, apiKey) : void 0;
+  return {
+    id: stored?.id ?? randomUUID(),
+    name: field(body, "name", 60),
+    baseUrl,
+    apiKey,
+    kind,
+    ...custom ? { custom } : {}
+  };
 };
 var handle = async (req, res) => {
   if (req.headers.authorization !== `Bearer ${token}`) throw new RequestError(401, "unauthorized");
@@ -521,7 +764,7 @@ var handle = async (req, res) => {
     const body = await readBody(req);
     const relay = resolveRelay(body, readConfig());
     try {
-      const contribution = await fetchRelay(relay);
+      const contribution = await fetchConnection(relay);
       json(res, 200, { ok: true, baseUrl: relay.baseUrl, ...contribution });
     } catch (error) {
       json(res, 200, { ok: false, error: describeError(error) });
@@ -530,7 +773,7 @@ var handle = async (req, res) => {
     const body = await readBody(req);
     const config = readConfig();
     const relay = resolveRelay(body, config);
-    if (!relay.name) throw new RequestError(400, "\u8BF7\u586B\u5199\u4E2D\u8F6C\u7AD9\u540D\u79F0");
+    if (!relay.name) throw new RequestError(400, "\u8BF7\u586B\u5199\u63A5\u53E3\u540D\u79F0");
     const index = config.relays.findIndex((item) => item.id === relay.id);
     if (index >= 0) config.relays[index] = relay;
     else config.relays.push(relay);
@@ -539,7 +782,7 @@ var handle = async (req, res) => {
     json(res, 200, { relays: config.relays.map(publicRelay) });
   } else if (url.pathname === "/relays" && req.method === "DELETE") {
     const id = url.searchParams.get("id");
-    if (!id) throw new RequestError(400, "\u7F3A\u5C11\u4E2D\u8F6C\u7AD9\u7F16\u53F7");
+    if (!id) throw new RequestError(400, "\u7F3A\u5C11\u63A5\u53E3\u7F16\u53F7");
     const config = readConfig();
     config.relays = config.relays.filter((relay) => relay.id !== id);
     writeConfig(config);

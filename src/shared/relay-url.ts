@@ -20,3 +20,25 @@ export const normalizeRelayUrl = (input: string): string => {
 
 export const changesRelayOrigin = (previous: string, next: string): boolean =>
   new URL(normalizeRelayUrl(previous)).origin !== new URL(normalizeRelayUrl(next)).origin;
+
+/** Custom provider endpoints keep their path and query; only the origin is compared for key reuse. */
+export const normalizeEndpointUrl = (input: string): string => {
+  const value = input.trim();
+  if (!value) throw new Error('请填写接口地址');
+  let url: URL;
+  try {
+    url = new URL(value.includes('://') ? value : `https://${value}`);
+  } catch {
+    throw new Error('请输入有效的接口地址，例如 https://api.example.com/v1/balance');
+  }
+  if (!['https:', 'http:'].includes(url.protocol) || !url.hostname) {
+    throw new Error('接口地址仅支持 HTTP 或 HTTPS');
+  }
+  if (url.username || url.password || url.hash) {
+    throw new Error('接口地址不能包含账号、密码或锚点');
+  }
+  return url.toString();
+};
+
+export const changesEndpointOrigin = (previous: string, next: string): boolean =>
+  new URL(normalizeEndpointUrl(previous)).origin !== new URL(normalizeEndpointUrl(next)).origin;

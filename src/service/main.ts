@@ -9,9 +9,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Balance, BalancesResult, Provider, Relay, UsageWindow } from '../shared/types.ts';
-import { changesRelayOrigin, normalizeRelayUrl } from '../shared/relay-url.ts';
+import type { BalancesResult, CustomRequest, Provider, Relay, UsageWindow } from '../shared/types.ts';
+import { changesEndpointOrigin, changesRelayOrigin, normalizeEndpointUrl, normalizeRelayUrl } from '../shared/relay-url.ts';
 import { createBalanceCache, failedProvider } from './cache.ts';
+import type { Contribution } from './contribution.ts';
+import { asNumber, makeBalance, makeWindow, shortPlanLabel, toTimestamp, windowFromCounts } from './normalize.ts';
+import { parseCustomContribution, validateCustomRequest } from './custom.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
 const token = process.env.OPENCHAMBER_SERVICE_TOKEN ?? '';
@@ -130,15 +133,59 @@ const firstCredential = (credentials: Record<string, Credential>, ids: string[])
 // Relay (OpenAI/NewAPI/Sub2API compatible) config
 // ---------------------------------------------------------------------------
 
-const isRelay = (value: unknown): value is Relay => {
-  if (!value || typeof value !== 'object') return false;
+const storedText = (value: unknown, max: number, fallback = ''): string => {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'string' || value.length > max) throw new Error();
+  return value;
+};
+
+const parseStoredCustom = (value: unknown): CustomRequest => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
   const record = value as Record<string, unknown>;
-  return (
-    typeof record.id === 'string' &&
-    typeof record.name === 'string' &&
-    typeof record.baseUrl === 'string' &&
-    typeof record.apiKey === 'string'
-  );
+  const mappingRecord = record.mapping;
+  if (!mappingRecord || typeof mappingRecord !== 'object' || Array.isArray(mappingRecord)) throw new Error();
+  const mapping = mappingRecord as Record<string, unknown>;
+  const method = record.method === 'POST' ? 'POST' : 'GET';
+  const authScheme = record.authScheme === 'raw' ? 'raw' : 'bearer';
+  return {
+    method,
+    authHeader: storedText(record.authHeader, 100),
+    authScheme,
+    headers: storedText(record.headers, 8_000),
+    body: storedText(record.body, 16_000),
+    mapping: {
+      balancePath: storedText(mapping.balancePath, 300),
+      unit: storedText(mapping.unit, 20, 'USD') || 'USD',
+      usedPath: storedText(mapping.usedPath, 300),
+      limitPath: storedText(mapping.limitPath, 300),
+      usedPercentPath: storedText(mapping.usedPercentPath, 300),
+      resetAtPath: storedText(mapping.resetAtPath, 300),
+      planPath: storedText(mapping.planPath, 300),
+      detailPath: storedText(mapping.detailPath, 300),
+      windowLabel: storedText(mapping.windowLabel, 40, '额度') || '额度',
+    },
+  };
+};
+
+const parseStoredRelay = (value: unknown): Relay => {
+  if (!value || typeof value !== 'object') throw new Error();
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.id !== 'string' ||
+    typeof record.name !== 'string' ||
+    typeof record.baseUrl !== 'string' ||
+    typeof record.apiKey !== 'string'
+  ) throw new Error();
+  const kind = record.kind === 'custom' ? 'custom' : 'auto';
+  if (kind === 'auto') return { id: record.id, name: record.name, baseUrl: record.baseUrl, apiKey: record.apiKey, kind };
+  return {
+    id: record.id,
+    name: record.name,
+    baseUrl: record.baseUrl,
+    apiKey: record.apiKey,
+    kind,
+    custom: parseStoredCustom(record.custom),
+  };
 };
 
 class RequestError extends Error {
@@ -151,16 +198,16 @@ const readConfig = (): { relays: Relay[] } => {
     raw = fs.readFileSync(CONFIG_FILE, 'utf8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { relays: [] };
-    throw new RequestError(500, '无法读取中转站配置，请检查文件权限');
+    throw new RequestError(500, '无法读取接口配置，请检查文件权限');
   }
   try {
     const parsed = JSON.parse(raw) as { relays?: unknown };
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
     const relays = parsed.relays ?? [];
-    if (!Array.isArray(relays) || !relays.every(isRelay)) throw new Error();
-    return { relays };
+    if (!Array.isArray(relays)) throw new Error();
+    return { relays: relays.map(parseStoredRelay) };
   } catch {
-    throw new RequestError(500, '中转站配置格式有误，请修复 config.json 后重试；现有文件未修改');
+    throw new RequestError(500, '接口配置格式有误，请修复 config.json 后重试；现有文件未修改');
   }
 };
 
@@ -182,8 +229,13 @@ const writeConfig = (config: { relays: Relay[] }): void => {
 
 type JsonAnswer = { status: number; ok: boolean; body: unknown };
 
-const fetchJson = async (url: string, headers: Record<string, string>, signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS)): Promise<JsonAnswer> => {
-  const response = await fetch(url, { headers, signal });
+const fetchJson = async (
+  url: string,
+  headers: Record<string, string>,
+  signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  init: { method?: 'GET' | 'POST'; body?: string } = {},
+): Promise<JsonAnswer> => {
+  const response = await fetch(url, { headers, signal, method: init.method, body: init.body });
   const text = await response.text();
   let body: unknown = null;
   try {
@@ -194,107 +246,9 @@ const fetchJson = async (url: string, headers: Record<string, string>, signal = 
   return { status: response.status, ok: response.ok, body };
 };
 
-const asNumber = (value: unknown): number | null => {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-};
-
-const clampPercent = (value: number): number => Math.min(100, Math.max(0, value));
-
-const toTimestamp = (value: unknown): number | null => {
-  const numeric = asNumber(value);
-  if (numeric !== null) {
-    if (numeric <= 0) return null;
-    return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
-  }
-  if (typeof value === 'string') {
-    const parsed = Date.parse(value);
-    return Number.isNaN(parsed) ? null : parsed;
-  }
-  return null;
-};
-
-const formatReset = (timestamp: number | null): string | null => {
-  if (timestamp === null) return null;
-  const date = new Date(timestamp);
-  if (!Number.isFinite(date.getTime())) return null;
-  const now = new Date();
-  const sameDay = date.toDateString() === now.toDateString();
-  return sameDay
-    ? date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-    : date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-};
-
-const makeWindow = (
-  key: string,
-  label: string,
-  usedPercent: number,
-  resetAtRaw: unknown,
-  detail?: string | null,
-): UsageWindow => {
-  const used = clampPercent(usedPercent);
-  const resetAt = toTimestamp(resetAtRaw);
-  return {
-    key,
-    label,
-    usedPercent: used,
-    remainingPercent: clampPercent(100 - used),
-    resetAt,
-    resetAtText: formatReset(resetAt),
-    detail: detail ?? null,
-  };
-};
-
-const windowFromCounts = (
-  key: string,
-  label: string,
-  usedRaw: unknown,
-  capRaw: unknown,
-  resetAtRaw: unknown,
-): UsageWindow | null => {
-  const used = asNumber(usedRaw);
-  const cap = asNumber(capRaw);
-  if (used === null || cap === null || cap <= 0) return null;
-  const round = (value: number): string => (Math.round(value * 100) / 100).toString();
-  return makeWindow(key, label, (used / cap) * 100, resetAtRaw, `${round(used)} / ${round(cap)}`);
-};
-
-const moneyLabel = (value: number, unit: string): string => {
-  const symbol = unit === 'USD' || unit === '$' ? '$' : unit === 'CNY' || unit === '¥' ? '¥' : '';
-  // Currencies get cents; credit-style units stay to one decimal so the card
-  // does not overflow into a wrapped line.
-  return symbol ? `${symbol}${value.toFixed(2)}` : `${Math.round(value * 10) / 10} ${unit}`;
-};
-
-/**
- * `individual-goat` reads as `GOAT`, `step-plan` as `PLAN`. Anything that is
- * not an id-shaped string (StepFun's 预付费, a relay's 钱包余额) is kept.
- */
-const shortPlanLabel = (plan: string | null): string | null => {
-  if (!plan) return null;
-  if (!/^[a-z0-9]+(?:[-_][a-z0-9]+)+$/i.test(plan)) return plan;
-  const last = plan.split(/[-_]/).pop() ?? plan;
-  return last.toUpperCase();
-};
-
-const makeBalance = (value: number | null, unit: string): Balance | null =>
-  value === null ? null : { value, label: moneyLabel(value, unit), unit };
-
 // ---------------------------------------------------------------------------
 // Provider fetchers — each returns a normalized contribution
 // ---------------------------------------------------------------------------
-
-type Contribution = {
-  configured?: boolean;
-  plan?: string | null;
-  balance?: Balance | null;
-  detail?: string | null;
-  windows?: UsageWindow[];
-};
 
 const COMMAND_CODE_HEADERS = {
   Accept: 'application/json',
@@ -472,21 +426,76 @@ const fetchRelay = async (relay: Relay): Promise<Contribution> => {
   throw new Error([usage.status, subscription.status, newApi.status].includes(401) ? '认证失败，请检查 API Key 是否有效' : [usage.status, subscription.status, newApi.status].includes(403) ? '当前 Key 没有查询余额的权限' : '无法识别余额接口，请检查服务地址及站点是否支持余额查询');
 };
 
+const parseHeaderLines = (raw: string): Record<string, string> => {
+  const headers: Record<string, string> = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const separator = trimmed.indexOf(':');
+    if (separator <= 0) throw new Error('额外请求头格式应为 Name: value');
+    const name = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim();
+    if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name) || /[\r\n]/.test(value)) {
+      throw new Error('额外请求头格式不正确');
+    }
+    headers[name] = value;
+  }
+  return headers;
+};
+
+const fetchCustom = async (relay: Relay): Promise<Contribution & { raw?: unknown }> => {
+  const custom = relay.custom;
+  if (!custom) throw new Error('自定义接口缺少请求配置');
+  validateCustomRequest(custom);
+  const headers: Record<string, string> = { Accept: 'application/json', ...parseHeaderLines(custom.headers) };
+  const authHeader = custom.authHeader.trim();
+  if (authHeader) headers[authHeader] = custom.authScheme === 'bearer' ? `Bearer ${relay.apiKey}` : relay.apiKey;
+  if (custom.method === 'POST' && custom.body.trim() && !Object.keys(headers).some((name) => name.toLowerCase() === 'content-type')) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const answer = await fetchJson(relay.baseUrl, headers, undefined, {
+    method: custom.method,
+    body: custom.method === 'POST' && custom.body.trim() ? custom.body : undefined,
+  });
+  if (!answer.ok) throw new Error(`自定义接口返回 HTTP ${answer.status}`);
+  return { ...parseCustomContribution(answer.body, custom.mapping), raw: answer.body };
+};
+
+const fetchConnection = (relay: Relay): Promise<Contribution & { raw?: unknown }> => (
+  relay.kind === 'custom' ? fetchCustom(relay) : fetchRelay(relay)
+);
+
 // ---------------------------------------------------------------------------
 // Assembly
 // ---------------------------------------------------------------------------
+
+type BuiltinProvider = {
+  id: string;
+  name: string;
+  credentialIds: string[];
+  fetch: (credential: Credential | null) => Promise<Contribution>;
+};
+
+/** Add a built-in provider here; no credentials means it is not shown. */
+const BUILTIN_PROVIDERS: BuiltinProvider[] = [
+  { id: 'command-code', name: 'Command Code', credentialIds: ['command-code', 'commandcode'], fetch: fetchCommandCode },
+  { id: 'stepfun', name: 'StepFun', credentialIds: ['stepfun-step-plan', 'stepfun'], fetch: fetchStepfun },
+];
 
 const buildBalances = async (previous: Provider[]): Promise<BalancesResult> => {
   const credentials = await readCredentials();
   const relays = readConfig().relays;
 
   const jobs: Array<{ id: string; name: string; run: () => Promise<Contribution> }> = [
-    { id: 'command-code', name: 'Command Code', run: () => fetchCommandCode(firstCredential(credentials, ['command-code', 'commandcode'])) },
-    { id: 'stepfun', name: 'StepFun', run: () => fetchStepfun(firstCredential(credentials, ['stepfun-step-plan', 'stepfun'])) },
+    ...BUILTIN_PROVIDERS.map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      run: () => provider.fetch(firstCredential(credentials, provider.credentialIds)),
+    })),
     ...relays.map((relay) => ({
       id: `relay:${relay.id}`,
       name: relay.name,
-      run: () => fetchRelay(relay),
+      run: () => fetchConnection(relay),
     })),
   ];
 
@@ -557,26 +566,98 @@ const readBody = (req: http.IncomingMessage): Promise<Record<string, unknown>> =
     });
   });
 
-const publicRelay = (relay: Relay) => ({ id: relay.id, name: relay.name, baseUrl: relay.baseUrl, hasKey: relay.apiKey.length > 0 });
+const redact = (text: string, secret: string): string => (
+  secret ? text.split(secret).join('{key}') : text
+);
+const publicRelay = (relay: Relay) => ({
+  id: relay.id,
+  name: relay.name,
+  baseUrl: relay.baseUrl,
+  hasKey: relay.apiKey.length > 0,
+  kind: relay.kind ?? 'auto',
+  ...(relay.kind === 'custom' && relay.custom ? {
+    custom: {
+      ...relay.custom,
+      headers: redact(relay.custom.headers, relay.apiKey),
+      body: redact(relay.custom.body, relay.apiKey),
+    },
+  } : {}),
+});
 const field = (body: Record<string, unknown>, key: string, max: number): string => {
   const value = typeof body[key] === 'string' ? body[key].trim() : '';
   if (value.length > max) throw new RequestError(400, `${key} 长度超出限制`);
   return value;
 };
+const nestedText = (record: Record<string, unknown>, key: string, max: number, fallback = ''): string => {
+  const value = record[key];
+  if (value === undefined) return fallback;
+  if (typeof value !== 'string') throw new RequestError(400, `${key} 必须是文本`);
+  if (value.length > max) throw new RequestError(400, `${key} 长度超出限制`);
+  return value;
+};
+const customRequest = (body: Record<string, unknown>, apiKey: string): CustomRequest => {
+  const raw = body.custom;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new RequestError(400, '缺少自定义接口配置');
+  const record = raw as Record<string, unknown>;
+  const rawMapping = record.mapping;
+  if (!rawMapping || typeof rawMapping !== 'object' || Array.isArray(rawMapping)) throw new RequestError(400, '缺少响应字段映射');
+  const mapping = rawMapping as Record<string, unknown>;
+  const request: CustomRequest = {
+    method: record.method === 'POST' ? 'POST' : 'GET',
+    authHeader: nestedText(record, 'authHeader', 100, 'Authorization').trim(),
+    authScheme: record.authScheme === 'raw' ? 'raw' : 'bearer',
+    headers: nestedText(record, 'headers', 8_000),
+    body: nestedText(record, 'body', 16_000),
+    mapping: {
+      balancePath: nestedText(mapping, 'balancePath', 300).trim(),
+      unit: nestedText(mapping, 'unit', 20, 'USD').trim() || 'USD',
+      usedPath: nestedText(mapping, 'usedPath', 300).trim(),
+      limitPath: nestedText(mapping, 'limitPath', 300).trim(),
+      usedPercentPath: nestedText(mapping, 'usedPercentPath', 300).trim(),
+      resetAtPath: nestedText(mapping, 'resetAtPath', 300).trim(),
+      planPath: nestedText(mapping, 'planPath', 300).trim(),
+      detailPath: nestedText(mapping, 'detailPath', 300).trim(),
+      windowLabel: nestedText(mapping, 'windowLabel', 40, '额度').trim() || '额度',
+    },
+  };
+  try { validateCustomRequest(request); }
+  catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '自定义接口配置不正确'); }
+  if (apiKey && (request.headers.includes(apiKey) || request.body.includes(apiKey))) {
+    throw new RequestError(400, '不要把 API Key 写进额外请求头或请求体');
+  }
+  return request;
+};
 const resolveRelay = (body: Record<string, unknown>, config: { relays: Relay[] }): Relay => {
   const id = field(body, 'id', 128);
   const stored = id ? config.relays.find((relay) => relay.id === id) : undefined;
-  if (id && !stored) throw new RequestError(404, '此中转站已移除，请重新打开管理页面');
+  if (id && !stored) throw new RequestError(404, '此接口已移除，请重新打开管理页面');
+  const kind = body.kind === 'custom' ? 'custom' : 'auto';
   let baseUrl: string;
-  try { baseUrl = normalizeRelayUrl(field(body, 'baseUrl', 2048)); }
-  catch (error) { throw new RequestError(400, describeError(error)); }
+  try {
+    baseUrl = kind === 'custom'
+      ? normalizeEndpointUrl(field(body, 'baseUrl', 4096))
+      : normalizeRelayUrl(field(body, 'baseUrl', 2048));
+  } catch (error) { throw new RequestError(400, describeError(error)); }
   const typedKey = field(body, 'apiKey', 4096);
-  if (!typedKey && stored && changesRelayOrigin(stored.baseUrl, baseUrl)) {
-    throw new RequestError(400, '更换站点地址时，请重新填写该站点的 API Key');
+  const originChanged = stored
+    ? (stored.kind === 'custom' || kind === 'custom'
+      ? changesEndpointOrigin(stored.baseUrl, baseUrl)
+      : changesRelayOrigin(stored.baseUrl, baseUrl))
+    : false;
+  if (!typedKey && stored && originChanged) {
+    throw new RequestError(400, '更换接口地址时，请重新填写 API Key');
   }
   const apiKey = typedKey || stored?.apiKey || '';
   if (!apiKey) throw new RequestError(400, '请填写 API Key');
-  return { id: stored?.id ?? randomUUID(), name: field(body, 'name', 60), baseUrl, apiKey };
+  const custom = kind === 'custom' ? customRequest(body, apiKey) : undefined;
+  return {
+    id: stored?.id ?? randomUUID(),
+    name: field(body, 'name', 60),
+    baseUrl,
+    apiKey,
+    kind,
+    ...(custom ? { custom } : {}),
+  };
 };
 
 const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
@@ -592,7 +673,7 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
     const body = await readBody(req);
     const relay = resolveRelay(body, readConfig());
     try {
-      const contribution = await fetchRelay(relay);
+      const contribution = await fetchConnection(relay);
       json(res, 200, { ok: true, baseUrl: relay.baseUrl, ...contribution });
     } catch (error) {
       json(res, 200, { ok: false, error: describeError(error) });
@@ -601,7 +682,7 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
     const body = await readBody(req);
     const config = readConfig();
     const relay = resolveRelay(body, config);
-    if (!relay.name) throw new RequestError(400, '请填写中转站名称');
+    if (!relay.name) throw new RequestError(400, '请填写接口名称');
     const index = config.relays.findIndex((item) => item.id === relay.id);
     if (index >= 0) config.relays[index] = relay;
     else config.relays.push(relay);
@@ -610,7 +691,7 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
     json(res, 200, { relays: config.relays.map(publicRelay) });
   } else if (url.pathname === '/relays' && req.method === 'DELETE') {
     const id = url.searchParams.get('id');
-    if (!id) throw new RequestError(400, '缺少中转站编号');
+    if (!id) throw new RequestError(400, '缺少接口编号');
     const config = readConfig();
     config.relays = config.relays.filter((relay) => relay.id !== id);
     writeConfig(config);

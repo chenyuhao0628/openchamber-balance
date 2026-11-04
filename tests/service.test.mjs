@@ -23,6 +23,10 @@ test('local HTTP service with isolated files and a synthetic upstream', async (t
   const upstream = http.createServer((req, res) => {
     requests++;
     res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/custom/balance') {
+      res.end(JSON.stringify({ data: { balance: 42.5, used: 10, limit: 50, reset_at: '2026-11-01T00:00:00Z', plan: 'Pro' } }));
+      return;
+    }
     if (mode === 'offline') { res.writeHead(503); res.end('{}'); return; }
     if (mode === 'no-usage') {
       if (req.url === '/v1/dashboard/billing/subscription') res.end(JSON.stringify({ hard_limit_usd: 100 }));
@@ -58,6 +62,7 @@ test('local HTTP service with isolated files and a synthetic upstream', async (t
   }
   assert.ok(ready, 'service starts');
   let id;
+  let customId;
   await t.test('all routes require host authentication', async () => {
     assert.equal((await call('/health', 'GET', undefined, false)).status, 401);
     assert.equal((await call('/balances', 'GET', undefined, false)).status, 401);
@@ -107,6 +112,54 @@ test('local HTTP service with isolated files and a synthetic upstream', async (t
     assert.equal(result.data.balance, null);
     assert.match(result.data.detail, /无法计算/);
     mode = 'normal';
+  });
+  await t.test('custom endpoints use their own mapping without exposing the key', async () => {
+    const payload = {
+      name: 'Custom',
+      baseUrl: base + '/custom/balance',
+      apiKey: 'custom-key',
+      kind: 'custom',
+      custom: {
+        method: 'GET',
+        authHeader: 'Authorization',
+        authScheme: 'bearer',
+        headers: 'x-fixture: yes',
+        body: '',
+        mapping: {
+          balancePath: 'data.balance',
+          unit: 'USD',
+          usedPath: 'data.used',
+          limitPath: 'data.limit',
+          usedPercentPath: '',
+          resetAtPath: 'data.reset_at',
+          planPath: 'data.plan',
+          detailPath: '',
+          windowLabel: '额度',
+        },
+      },
+    };
+    const saved = await call('/relays', 'POST', payload);
+    assert.equal(saved.status, 200);
+    customId = saved.data.relays.find(relay => relay.name === 'Custom').id;
+    assert.equal(JSON.stringify(saved.data).includes('custom-key'), false);
+    assert.equal(saved.data.relays.find(relay => relay.id === customId).kind, 'custom');
+    assert.equal(saved.data.relays.find(relay => relay.id === customId).custom.mapping.balancePath, 'data.balance');
+
+    const tested = await call('/relays/test', 'POST', { ...payload, id: customId, apiKey: '' });
+    assert.equal(tested.data.ok, true);
+    assert.equal(tested.data.balance.value, 42.5);
+    assert.equal(tested.data.windows[0].usedPercent, 20);
+    assert.equal(tested.data.raw.data.plan, 'Pro');
+
+    const balances = await call('/balances?refresh=1');
+    const custom = balances.data.providers.find(provider => provider.id === `relay:${customId}`);
+    assert.equal(custom.balance.value, 42.5);
+    assert.equal(custom.windows[0].usedPercent, 20);
+
+    const rejected = await call('/relays', 'POST', { ...payload, id: customId, apiKey: '', custom: { ...payload.custom, headers: 'Authorization: custom-key' } });
+    assert.equal(rejected.status, 400);
+    assert.match(rejected.data.error, /不要/);
+    await call('/relays?id=' + customId, 'DELETE');
   });
   await t.test('malformed, oversized and stale edits fail without stopping the service', async () => {
     assert.equal((await call('/relays', 'POST', '{broken')).status, 400);

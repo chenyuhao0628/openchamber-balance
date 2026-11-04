@@ -4,13 +4,14 @@ English | [简体中文](#简体中文)
 
 ## English
 
-**Balance** brings AI service balances, quotas and reset times into one side panel and a compact Work Status section. It supports Command Code, StepFun and custom relay endpoints, keeps the last successful result when a refresh fails, and uses manual refresh instead of background polling.
+**Balance** brings AI service balances, quotas and reset times into one side panel and a compact Work Status section. It supports Command Code, StepFun, custom relay endpoints and user-defined balance APIs, keeps the last successful result when a refresh fails, and uses manual refresh instead of background polling.
 
 ### Highlights
 
 - Command Code, StepFun and custom relay balances in one overview.
 - Used quota, remaining quota and reset time; amounts are right-aligned and currencies stay separate.
 - Relay management with a connection test before saving.
+- Custom balance APIs: fill in the request URL, auth header and JSON field paths to add a provider without changing code.
 - Cached results, merged concurrent refreshes and immediate cache invalidation after a relay change.
 - Light, dark and narrow layouts that follow the host theme.
 
@@ -34,7 +35,7 @@ https://github.com/chenyuhao0628/openchamber-balance
 
 Requires OpenChamber **1.24.0 or newer**; tested on 2.5.2. The extension runs a local service on `127.0.0.1` and checks the host Bearer token. Saved relay keys are never returned by the list or balance APIs.
 
-> The panel UI is currently Chinese. The full Chinese documentation is below.
+> The panel and Work Status copy follow the host language (Simplified Chinese or English). The full Chinese documentation is below.
 
 ---
 
@@ -42,9 +43,11 @@ Requires OpenChamber **1.24.0 or newer**; tested on 2.5.2. The extension runs a 
 
 OpenChamber 余额扩展，在**工作状态分区**与右侧「**余额**」面板中汇总 AI 服务的余额、额度和重置时间。
 
-当前版本 **0.2.10**，本说明于 **2026-10-26** 对照源码和本机宿主核对。清单声明宿主版本 `>=1.24.0`，SDK 依赖为 **2.5.2**；这些声明不等于已测试所有宿主版本。
+当前版本 **0.2.12**，本说明于 **2026-11-04** 对照源码和本机宿主核对。面板与工作状态文案跟随宿主语言在简体中文和英文间切换。清单声明宿主版本 `>=1.24.0`，SDK 依赖为 **2.5.2**；这些声明不等于已测试所有宿主版本。
 
 ## 使用体验
+
+0.2.12 增加“自定义余额接口”：填写完整请求地址、GET/POST、认证请求头和 JSON 字段路径，即可接入内置列表之外的供应商。内置 Command Code、StepFun 改为服务内供应商注册表，仍只在 OpenCode 凭据存在时显示。
 
 0.2.10 以宿主 **2.5.2** 的源码为基准，继续对齐工作状态分区正文：去掉 status iframe 自绘的浅色底块；抵消宿主 frame 的 4px 外边距后保持与内置「用量」相同的净 4px 缩进；provider 图标改用 foreground；今天重置只显示时间；无数据或失败状态移到 provider 行右侧。完整侧栏面板保持原有总览与中转站管理。
 
@@ -55,7 +58,7 @@ OpenChamber 余额扩展，在**工作状态分区**与右侧「**余额**」面
 0.2.2 进一步接入项目共享的 `ui/native.css`，统一基础主题、焦点、字号与减少动画规则；图标使用宿主已支持的 `bank-card`，避免未识别图标回退为默认扩展图标。业务接口和服务逻辑保持上一版行为。
 
 - 默认打开「总览」：服务名称、余额、已用额度与重置时间按固定层次展示，金额右对齐；不同币种分别显示。
-- 「中转站」独立管理连接，点击添加或编辑才出现表单，保存后返回总览。
+- 「接口」独立管理连接，点击添加或编辑才出现表单，保存后返回总览。
 - 跟随 OpenChamber 的字体、色彩和控件风格，适配浅色、深色和窄侧栏。方向键可切换页签，Enter 可提交表单。
 - 工作状态分区正文与内置「用量」使用相同的行式布局、字号、行高和图标尺寸；标题行只能使用宿主提供的文字控件，无法复刻内置用量的“摘要 + 图标刷新”。刷新/管理位于标题行；管理入口复用完整余额侧栏。无项目会话可直接点击右侧「余额」图标；原版宿主 2.4.0 的工作状态「管理」入口仍无响应，该限制暂时保留，原因见[已知限制](#已知限制)。
 - 刷新失败时保留上次成功数据，并明确显示“上次余额”、错误原因和成功时间；未知余额显示 `—`。
@@ -66,7 +69,7 @@ OpenChamber 余额扩展，在**工作状态分区**与右侧「**余额**」面
 
 - 标题行：内置用量显示最小窗口摘要和图标刷新；扩展状态控件只有文字按钮/选择器，没有摘要和图标按钮。这是接口限制。
 - 失败与无数据：查询失败且已有历史数据时，余额分区保留一条 muted 错误行并标明上次成功时间；内置用量主要依赖 provider 行 tooltip。保留显式提示是为了满足余额扩展的 stale 规则。
-- Provider 图标：仅对已支持的 Command Code、StepFun 使用品牌图标；自定义中转站没有可映射的宿主 logo，不伪造通用品牌图标。
+- Provider 图标：仅对已支持的 Command Code、StepFun 使用品牌图标；自定义接口没有可映射的宿主 logo，不伪造通用品牌图标。
 
 ## 支持的数据
 
@@ -74,9 +77,10 @@ OpenChamber 余额扩展，在**工作状态分区**与右侧「**余额**」面
 | --- | --- | --- |
 | Command Code | `whoami`、`billing/credits`；补充查询 `billing/subscriptions` 与 `usage/summary` | 剩余积分、5 小时/每周额度；数据完整时展示推算的月度使用比例及套餐 |
 | StepFun（含 step-plan） | `GET https://api.stepfun.com/v1/accounts` | 总余额、现金和代金券余额 |
-| 自定义中转站 | 依次识别 `/v1/usage`、dashboard billing、`/api/usage/token/` | 接口可提供的余额、订阅或用量信息 |
+| 自动识别中转站 | 依次识别 `/v1/usage`、dashboard billing、`/api/usage/token/` | 接口可提供的余额、订阅或用量信息 |
+| 自定义余额接口 | 用户填写的完整 URL、请求方式、认证头和 JSON 字段路径 | 余额、一个额度窗口、套餐和说明 |
 
-当前源码**没有内置 OpenCode Go 查询**。Command Code 的月度总额由本期已用与剩余积分相加得到，不应解读成供应商明确返回的固定套餐额度。中转站兼容性取决于实际返回字段，详见本页“支持的数据”与“凭据如何使用”。
+当前源码**没有内置 OpenCode Go 查询**。Command Code 的月度总额由本期已用与剩余积分相加得到，不应解读成供应商明确返回的固定套餐额度。接口兼容性取决于实际返回字段或自定义字段路径，详见本页“支持的数据”与“凭据如何使用”。
 
 没有可用凭据的内置供应商不展示；已配置但查询失败的供应商单独显示错误，不阻止其他供应商显示。
 
@@ -109,21 +113,22 @@ https://github.com/chenyuhao0628/openchamber-balance
 
 - **没有定时自动刷新。** 服务进程第一次收到余额请求时查询上游，随后缓存结果；切换会话或再次打开面板复用缓存。
 - 点击「刷新」会强制查询；同一配置版本下的并发查询会合并，刷新过程中保留已有结果。
-- 保存或移除中转站时，服务立即使缓存失效，旧的进行中请求也不能重新带回旧配置；该面板随后重新查询余额。
+- 保存或移除接口时，服务立即使缓存失效，旧的进行中请求也不能重新带回旧配置；该面板随后重新查询余额。
 - 服务重启会丢失内存缓存。各面板没有实时广播同步，其他已打开面板需要再次加载或点击刷新。
 - 直接编辑磁盘配置后，应重新加载扩展服务；文件没有自动监听，重启还会清除旧账户的历史余额。
 
-## 管理中转站
+## 管理余额接口
 
-在右侧「余额」面板切换到「中转站」。工作状态分区只显示摘要，不提供管理表单。
+在右侧「余额」面板切换到「接口」。工作状态分区只显示摘要，不提供管理表单。
 
-- **新增**：点击「添加中转站」，填写名称、服务地址和 API Key。可先「测试连接」；测试会请求上游，成功提示中明确说明尚未保存。
-- **编辑**：Key 留空表示继续使用已保存的 Key。如果更换协议、主机或端口，需填写新站点的 Key，避免把原 Key 发往其他站点。
+- **自动识别中转站**：填写名称、服务地址和 API Key。服务依次尝试 `/v1/usage`、dashboard billing、`/api/usage/token/`，适合常见中转站。
+- **自定义余额接口**：填写完整请求地址、请求方式、认证请求头和 JSON 字段路径。适合 OpenChamber 内置列表之外、返回格式各不相同的供应商。字段路径支持 `data.balance`、`data.items[0].remaining` 这类点号和数组下标写法，不执行用户代码。
+- **测试连接**：测试会请求上游并显示解析结果；自定义接口还会显示原始 JSON 响应，便于调整字段路径。测试不会保存配置。
+- **编辑**：Key 留空表示继续使用已保存的 Key。如果更换域名，需填写新接口的 Key，避免把原 Key 发往其他站点。
 - **移除**：点击「移除」后就地确认，可取消。确认后删除本地配置项并更新余额列表。
-- **服务地址**：接受 `relay.example.com`、`https://relay.example.com` 或 `https://relay.example.com/v1/`，统一为 `https://relay.example.com`；自定义代理路径保留。地址不能包含账号密码、查询参数或锚点。
 - **草稿**：切换页签或主题保留正在输入的内容；保存成功或取消会清空表单中的 Key。关闭或重载界面不保留草稿。
 
-也可手动维护 `~/.config/openchamber/balance/config.json`，结构如下；这里的 Key 只是占位符：
+也可手动维护 `~/.config/openchamber/balance/config.json`。自动识别中转站的结构如下；这里的 Key 只是占位符：
 
 ```json
 {
@@ -138,11 +143,47 @@ https://github.com/chenyuhao0628/openchamber-balance
 }
 ```
 
+自定义接口在原结构上增加 `kind` 和 `custom`；`baseUrl` 此时是完整请求地址：
+
+```json
+{
+  "relays": [
+    {
+      "id": "custom-example",
+      "name": "示例供应商",
+      "baseUrl": "https://api.example.com/v1/balance",
+      "apiKey": "REPLACE_WITH_YOUR_API_KEY",
+      "kind": "custom",
+      "custom": {
+        "method": "GET",
+        "authHeader": "Authorization",
+        "authScheme": "bearer",
+        "headers": "x-api-version: 2026-01-01",
+        "body": "",
+        "mapping": {
+          "balancePath": "data.balance",
+          "unit": "USD",
+          "usedPath": "data.used",
+          "limitPath": "data.limit",
+          "usedPercentPath": "",
+          "resetAtPath": "data.reset_at",
+          "planPath": "data.plan",
+          "detailPath": "data.note",
+          "windowLabel": "额度"
+        }
+      }
+    }
+  ]
+}
+```
+
+`authScheme` 为 `bearer` 时发送 `Authorization: Bearer <Key>`，为 `raw` 时直接把 Key 作为请求头值。`usedPercentPath` 优先于 `usedPath` + `limitPath`；两者都不填时只显示余额。额外请求头和请求体不能包含 API Key，服务会拒绝保存并在返回面板前再次脱敏。
+
 服务写入配置时通过临时文件原子替换，文件权限为 `0600`。配置损坏或无法读取时会报错，不会静默覆盖为一个空列表。手工创建文件时需自行确保相同权限。
 
 ## 凭据如何使用
 
-Command Code 和 StepFun 优先从 OpenCode SQLite 凭据表只读加载；数据库不可用时尝试旧版 `auth.json`。自定义中转站使用上面的本地配置文件。
+Command Code 和 StepFun 优先从 OpenCode SQLite 凭据表只读加载；数据库不可用时尝试旧版 `auth.json`。自定义接口使用上面的本地配置文件。
 
 服务不会通过列表和余额接口回传已保存的 Key，只返回 `hasKey` 等元数据。用户新输入的 Key 会暂时存在于面板表单中，再经宿主代理提交给本地服务；供应商请求由服务执行。不要将这个设计描述为“面板永远接触不到密钥”。
 

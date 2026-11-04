@@ -1,4 +1,4 @@
-import type { Provider, PublicRelay as Relay, UsageWindow } from '../shared/types.ts';
+import { EMPTY_CUSTOM_MAPPING, type CustomRequest, type Provider, type PublicRelay as Relay, type UsageWindow } from '../shared/types.ts';
 
 export const asNumber = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 
@@ -39,9 +39,48 @@ export const parseProvider = (value: unknown): Provider | null => {
   };
 };
 
+const text = (value: unknown, fallback = ''): string => typeof value === 'string' ? value : fallback;
+
+const parseCustomRequest = (value: unknown): CustomRequest | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const rawMapping = record.mapping;
+  if (!rawMapping || typeof rawMapping !== 'object' || Array.isArray(rawMapping)) return undefined;
+  const mapping = rawMapping as Record<string, unknown>;
+  return {
+    method: record.method === 'POST' ? 'POST' : 'GET',
+    authHeader: text(record.authHeader, 'Authorization'),
+    authScheme: record.authScheme === 'raw' ? 'raw' : 'bearer',
+    headers: text(record.headers),
+    body: text(record.body),
+    mapping: {
+      ...EMPTY_CUSTOM_MAPPING,
+      balancePath: text(mapping.balancePath),
+      unit: text(mapping.unit, 'USD'),
+      usedPath: text(mapping.usedPath),
+      limitPath: text(mapping.limitPath),
+      usedPercentPath: text(mapping.usedPercentPath),
+      resetAtPath: text(mapping.resetAtPath),
+      planPath: text(mapping.planPath),
+      detailPath: text(mapping.detailPath),
+      windowLabel: text(mapping.windowLabel, '额度'),
+    },
+  };
+};
+
 export const parseRelay = (value: unknown): Relay | null => {
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
   if (typeof record.id !== 'string' || typeof record.name !== 'string' || typeof record.baseUrl !== 'string') return null;
-  return { id: record.id, name: record.name, baseUrl: record.baseUrl, hasKey: record.hasKey === true };
+  const kind = record.kind === 'custom' ? 'custom' : 'auto';
+  const custom = kind === 'custom' ? parseCustomRequest(record.custom) : undefined;
+  if (kind === 'custom' && !custom) return null;
+  return {
+    id: record.id,
+    name: record.name,
+    baseUrl: record.baseUrl,
+    hasKey: record.hasKey === true,
+    kind,
+    ...(custom ? { custom } : {}),
+  };
 };

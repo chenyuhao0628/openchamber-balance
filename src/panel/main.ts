@@ -1,16 +1,18 @@
 // Two host surfaces share rendering; the status bundle never mounts relay management.
 declare const IS_SECTION: boolean;
 import { connectHost, HostRequestError, type GuestRequestMethod, type GuestStatusControl } from '@openchamber/sdk';
-import { applyHostReady, mountButton, mountTabs, mountTextField, mountSpinner } from '@openchamber/sdk/ui';
-import type { Provider, PublicRelay, UsageWindow } from '../shared/types.ts';
-import { changesRelayOrigin, normalizeRelayUrl } from '../shared/relay-url.ts';
+import { applyHostReady, mountButton, mountSelect, mountTabs, mountTextField, mountSpinner } from '@openchamber/sdk/ui';
+import { EMPTY_CUSTOM_MAPPING, EMPTY_CUSTOM_REQUEST, type CustomMapping, type CustomRequest, type Provider, type PublicRelay, type RelayKind, type UsageWindow } from '../shared/types.ts';
+import { changesEndpointOrigin, changesRelayOrigin, normalizeEndpointUrl, normalizeRelayUrl } from '../shared/relay-url.ts';
 import { asNumber, parseProvider, parseRelay } from './data.ts';
 import { formatBalance, formatReset, formatStatusReset, formatTime } from './format.ts';
 import css from './style.css';
 import { COMMAND_CODE_ICON, STEPFUN_ICON } from './provider-icons.ts';
 import native from '../../ui/native.css';
 import { openManager } from '../../ui/navigation.ts';
+import { applyDocumentLanguage, i18n, serverText } from './i18n.ts';
 
+const { t } = i18n;
 const host = connectHost({ requestTimeoutMs: 30_000 });
 const root = document.querySelector<HTMLElement>('#root');
 if (!root) throw new Error('Missing #root');
@@ -27,12 +29,12 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text?
 let providers: Provider[] = [];
 let relays: PublicRelay[] = [];
 let fetchedAt: number | null = null;
-let locale = 'zh-CN';
+let locale = i18n.locale;
 let initialized = false;
 let loading = false;
 let loadingRelays = false;
-let loadError: string | null = null;
-let relayError: string | null = null;
+let loadError: unknown | null = null;
+let relayError: unknown | null = null;
 let loadGeneration = 0;
 let relayGeneration = 0;
 let activeView: 'overview' | 'relays' = 'overview';
@@ -43,6 +45,13 @@ let operation: 'test' | 'save' | 'delete' | null = null;
 let formName = '';
 let formUrl = '';
 let formKey = '';
+let formKind: RelayKind = 'auto';
+let formMethod: CustomRequest['method'] = 'GET';
+let formAuthHeader = 'Authorization';
+let formAuthScheme: CustomRequest['authScheme'] = 'bearer';
+let formHeaders = '';
+let formBody = '';
+let formMapping: CustomMapping = { ...EMPTY_CUSTOM_MAPPING };
 let showKey = false;
 let notice: { text: string; tone: 'success' | 'error' } | null = null;
 let navigationMessage: string | null = null;
@@ -51,7 +60,7 @@ let statusControlSignature = '';
 
 const refreshBalances = (): void => { notice = null; void loadBalances(true); };
 const openBalanceManager = (): void => {
-  void openManager(host, { id: 'balance', name: '余额' }).catch((error) => { navigationMessage = error.message; render(); });
+  void openManager(host, { id: 'balance', name: t('余额') }).catch((error) => { navigationMessage = error.message; render(); });
 };
 if (IS_SECTION) {
   host.onStatusControl((event) => {
@@ -62,21 +71,21 @@ if (IS_SECTION) {
 
 const describeError = (error: unknown): string => {
   if (error instanceof HostRequestError) {
-    if (error.code === 'NO_SERVICE') return '请在设置 → 扩展中允许“余额”运行本地服务。';
-    if (error.code === 'SERVICE_FAILED') return '本地服务尚未就绪，请重新加载扩展后重试。';
-    if (error.code === 'HOST_TIMEOUT') return '查询耗时较长，请稍后重试。';
-    if (error.code === 'DISABLED') return '余额扩展已停用，请在扩展设置中启用。';
-    return '暂时无法连接本地服务，请稍后重试。';
+    if (error.code === 'NO_SERVICE') return t('请在设置 → 扩展中允许“余额”运行本地服务。');
+    if (error.code === 'SERVICE_FAILED') return t('本地服务尚未就绪，请重新加载扩展后重试。');
+    if (error.code === 'HOST_TIMEOUT') return t('查询耗时较长，请稍后重试。');
+    if (error.code === 'DISABLED') return t('余额扩展已停用，请在扩展设置中启用。');
+    return t('暂时无法连接本地服务，请稍后重试。');
   }
-  return error instanceof Error ? error.message : '操作失败，请重试。';
+  return serverText(error instanceof Error ? error.message : null) ?? t('操作失败，请重试。');
 };
 const request = async (method: GuestRequestMethod, path: string, options: { query?: Record<string, string>; body?: unknown } = {}): Promise<Record<string, unknown>> => {
   const response = await host.serviceRequest({ method, path, ...(options.query ? { query: options.query } : {}), ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }) });
   let data: Record<string, unknown>;
   try { data = JSON.parse(response.body) as Record<string, unknown>; }
-  catch { throw new Error('服务返回了无法识别的数据，请重试。'); }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('服务返回的数据格式不正确。');
-  if (response.status >= 400) throw new Error(typeof data.error === 'string' ? data.error : `请求失败（${response.status}）`);
+  catch { throw new Error(t('服务返回了无法识别的数据，请重试。')); }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error(t('服务返回的数据格式不正确。'));
+  if (response.status >= 400) throw new Error(typeof data.error === 'string' ? serverText(data.error) ?? data.error : t('请求失败（{status}）', { status: response.status }));
   return data;
 };
 const noteElement = (text: string, tone: 'success' | 'error' | 'warning' = 'warning'): HTMLElement => {
@@ -87,7 +96,7 @@ const noteElement = (text: string, tone: 'success' | 'error' | 'warning' = 'warn
 };
 
 const app = el('main', 'ext bx');
-app.setAttribute('aria-label', '余额与额度');
+app.setAttribute('aria-label', t('余额与额度'));
 const top = el('header', 'bx-top');
 const tabRoot = el('div', 'bx-tabs');
 const toolbar = el('div', 'bx-toolbar');
@@ -97,55 +106,128 @@ const time = el('span', 'bx-time');
 time.setAttribute('role', 'status');
 meta.append(count, time);
 const toolbarActions = el('div', 'bx-actions');
-const refresh = mountButton(toolbarActions, { label: '刷新', variant: 'ghost', size: 'sm', onClick: refreshBalances });
-if (IS_SECTION) mountButton(toolbarActions, { label: '管理', variant: 'ghost', size: 'sm', onClick: openBalanceManager });
+const refresh = mountButton(toolbarActions, { label: t('刷新'), variant: 'ghost', size: 'sm', onClick: refreshBalances });
+const manage = IS_SECTION ? mountButton(toolbarActions, { label: t('管理'), variant: 'ghost', size: 'sm', onClick: openBalanceManager }) : null;
 toolbar.append(meta, toolbarActions);
 top.append(toolbar);
 const overview = el('section', 'bx-view');
 overview.id = 'balance-overview';
-overview.setAttribute('aria-label', '余额总览');
+overview.setAttribute('aria-label', t('余额总览'));
 const alerts = el('div');
 const list = el('div');
-const footer = el('p', 'bx-footer', '余额按服务分别显示。点击刷新，获取最新数据。');
+const footer = el('p', 'bx-footer', t('余额按服务分别显示。点击刷新，获取最新数据。'));
 overview.append(alerts, list, footer);
 const management = el('section', 'bx-view');
 management.id = 'balance-relays';
-management.setAttribute('aria-label', '中转站管理');
+management.setAttribute('aria-label', t('接口管理'));
 const managementContent = el('div');
 const managementHead = el('div', 'bx-management-head');
-managementHead.append(el('p', '', '管理用于查询余额的连接'));
-const add = mountButton(managementHead, { label: '添加中转站', size: 'sm', onClick: () => openEditor('new') });
+const managementIntro = el('p', '', t('管理用于查询余额的接口'));
+managementHead.append(managementIntro);
+const add = mountButton(managementHead, { label: t('添加接口'), size: 'sm', onClick: () => openEditor('new') });
 const relayList = el('div');
 managementContent.append(managementHead, relayList);
 const editorRoot = el('div', 'bx-editor');
 const editorHead = el('div', 'bx-editor-head');
 const editorTitle = el('h2', 'bx-editor-title');
-const cancel = mountButton(editorHead, { label: '取消', variant: 'ghost', size: 'sm', onClick: () => closeEditor() });
+const cancel = mountButton(editorHead, { label: t('取消'), variant: 'ghost', size: 'sm', onClick: () => closeEditor() });
 editorHead.prepend(editorTitle);
-const editorIntro = el('p', 'bx-editor-intro', '填写连接信息，可先测试再保存。');
+const editorIntro = el('p', 'bx-editor-intro', t('填写连接信息，可先测试再保存。'));
 const form = el('form', 'bx-form');
 form.noValidate = true;
 form.addEventListener('submit', (event) => { event.preventDefault(); void saveRelay(); });
 const nameRoot = el('div', 'bx-field');
+const kindRoot = el('div', 'bx-field');
 const urlRoot = el('div', 'bx-field');
 const keyRoot = el('div', 'bx-field');
-const nameField = mountTextField(nameRoot, { label: '名称', placeholder: '例如：日常使用', value: '', onChange: (value) => { formName = value; nameField.update({ value, error: undefined }); clearTest(); } });
-const urlField = mountTextField(urlRoot, { label: '服务地址', placeholder: 'https://relay.example.com', value: '', helper: '可粘贴网站地址或以 /v1 结尾的 API 地址。', onChange: (value) => { formUrl = value; urlField.update({ value, error: undefined }); clearTest(); } });
-const keyField = mountTextField(keyRoot, { label: 'API Key', placeholder: '填写该站点的 API Key', password: true, mono: true, value: '', onChange: (value) => { formKey = value; keyField.update({ value, error: undefined }); clearTest(); } });
+const nameField = mountTextField(nameRoot, { label: t('名称'), placeholder: t('例如：日常使用'), value: '', onChange: (value) => { formName = value; nameField.update({ value, error: undefined }); clearTest(); } });
+const kindField = mountSelect(kindRoot, {
+  label: t('接口类型'),
+  value: 'auto',
+  options: [{ id: 'auto', label: t('自动识别中转站') }, { id: 'custom', label: t('自定义余额接口') }],
+  onChange: (value) => { formKind = value === 'custom' ? 'custom' : 'auto'; syncKind(); clearTest(); },
+});
+const urlField = mountTextField(urlRoot, { label: t('服务地址'), placeholder: 'https://relay.example.com', value: '', helper: t('可粘贴网站地址或以 /v1 结尾的 API 地址。'), onChange: (value) => { formUrl = value; urlField.update({ value, error: undefined }); clearTest(); } });
+const keyField = mountTextField(keyRoot, { label: 'API Key', placeholder: t('填写该站点的 API Key'), password: true, mono: true, value: '', onChange: (value) => { formKey = value; keyField.update({ value, error: undefined }); clearTest(); } });
 const keyActions = el('div', 'bx-key-actions');
-const reveal = mountButton(keyActions, { label: '显示密钥', variant: 'ghost', size: 'xs', onClick: () => { showKey = !showKey; keyField.update({ password: !showKey }); reveal.update({ label: showKey ? '隐藏密钥' : '显示密钥' }); } });
+const reveal = mountButton(keyActions, { label: t('显示密钥'), variant: 'ghost', size: 'xs', onClick: () => { showKey = !showKey; keyField.update({ password: !showKey }); reveal.update({ label: showKey ? t('隐藏密钥') : t('显示密钥') }); } });
 keyRoot.append(keyActions);
+
+const customRoot = el('div', 'bx-custom');
+const customHead = el('p', 'bx-custom-head', t('自定义接口设置'));
+const customHint = el('p', 'bx-custom-hint', t('按供应商文档填写请求地址和 JSON 字段路径；Key 只通过认证请求头发送。'));
+const customGrid = el('div', 'bx-custom-grid');
+const methodRoot = el('div', 'bx-field');
+const authHeaderRoot = el('div', 'bx-field');
+const authSchemeRoot = el('div', 'bx-field');
+const headersRoot = el('div', 'bx-field bx-field-wide');
+const bodyRoot = el('div', 'bx-field bx-field-wide');
+const methodField = mountSelect(methodRoot, {
+  label: t('请求方式'),
+  value: 'GET',
+  options: [{ id: 'GET', label: 'GET' }, { id: 'POST', label: 'POST' }],
+  onChange: (value) => { formMethod = value === 'POST' ? 'POST' : 'GET'; syncMethod(); clearTest(); },
+});
+const authHeaderField = mountTextField(authHeaderRoot, { label: t('认证请求头'), placeholder: 'Authorization', value: 'Authorization', helper: t('例如 Authorization 或 x-api-key；留空表示不添加认证。'), onChange: (value) => { formAuthHeader = value; clearTest(); } });
+const authSchemeField = mountSelect(authSchemeRoot, {
+  label: t('认证方式'),
+  value: 'bearer',
+  options: [{ id: 'bearer', label: 'Bearer Token' }, { id: 'raw', label: t('原始值') }],
+  onChange: (value) => { formAuthScheme = value === 'raw' ? 'raw' : 'bearer'; clearTest(); },
+});
+const headersField = mountTextField(headersRoot, { label: t('额外请求头'), placeholder: 'x-api-version: 2026-01-01', value: '', mono: true, multiline: true, rows: 2, helper: t('每行一个 Name: value，不要在这里填写 API Key。'), onChange: (value) => { formHeaders = value; clearTest(); } });
+const bodyField = mountTextField(bodyRoot, { label: t('请求体'), placeholder: '{"model":"balance"}', value: '', mono: true, multiline: true, rows: 2, helper: t('仅 POST 使用；不要在这里填写 API Key。'), onChange: (value) => { formBody = value; clearTest(); } });
+customGrid.append(methodRoot, authHeaderRoot, authSchemeRoot, headersRoot, bodyRoot);
+
+const mapping = el('details', 'bx-mapping');
+mapping.open = true;
+const mappingSummary = el('summary', '', t('响应字段映射'));
+const mappingHint = el('p', 'bx-custom-hint', t('填写 JSON 路径，例如 data.balance 或 data.items[0].remaining。'));
+mapping.append(mappingSummary, mappingHint);
+const mappingGrid = el('div', 'bx-custom-grid');
+const balancePathRoot = el('div', 'bx-field');
+const unitRoot = el('div', 'bx-field');
+const usedPathRoot = el('div', 'bx-field');
+const limitPathRoot = el('div', 'bx-field');
+const usedPercentPathRoot = el('div', 'bx-field');
+const resetAtPathRoot = el('div', 'bx-field');
+const windowLabelRoot = el('div', 'bx-field');
+const balancePathField = mountTextField(balancePathRoot, { label: t('余额字段'), placeholder: 'data.balance', value: '', onChange: (value) => { formMapping = { ...formMapping, balancePath: value }; clearTest(); } });
+const unitField = mountTextField(unitRoot, { label: t('单位'), placeholder: 'USD / CNY / 积分', value: 'USD', onChange: (value) => { formMapping = { ...formMapping, unit: value }; clearTest(); } });
+const usedPathField = mountTextField(usedPathRoot, { label: t('已用字段'), placeholder: 'data.used', value: '', onChange: (value) => { formMapping = { ...formMapping, usedPath: value }; clearTest(); } });
+const limitPathField = mountTextField(limitPathRoot, { label: t('总额字段'), placeholder: 'data.limit', value: '', onChange: (value) => { formMapping = { ...formMapping, limitPath: value }; clearTest(); } });
+const usedPercentPathField = mountTextField(usedPercentPathRoot, { label: t('已用百分比字段'), placeholder: 'data.used_percent', value: '', helper: t('百分比字段优先于已用/总额字段。'), onChange: (value) => { formMapping = { ...formMapping, usedPercentPath: value }; clearTest(); } });
+const resetAtPathField = mountTextField(resetAtPathRoot, { label: t('重置时间字段'), placeholder: 'data.reset_at', value: '', onChange: (value) => { formMapping = { ...formMapping, resetAtPath: value }; clearTest(); } });
+const windowLabelField = mountTextField(windowLabelRoot, { label: t('额度窗口名称'), placeholder: t('额度'), value: t('额度'), onChange: (value) => { formMapping = { ...formMapping, windowLabel: value }; clearTest(); } });
+mappingGrid.append(balancePathRoot, unitRoot, usedPathRoot, limitPathRoot, usedPercentPathRoot, resetAtPathRoot, windowLabelRoot);
+mapping.append(mappingGrid);
+
+const advanced = el('details', 'bx-mapping');
+const advancedSummary = el('summary', '', t('高级字段'));
+advanced.append(advancedSummary);
+const advancedGrid = el('div', 'bx-custom-grid');
+const planPathRoot = el('div', 'bx-field');
+const detailPathRoot = el('div', 'bx-field');
+const planPathField = mountTextField(planPathRoot, { label: t('套餐名称字段'), placeholder: 'data.plan', value: '', onChange: (value) => { formMapping = { ...formMapping, planPath: value }; clearTest(); } });
+const detailPathField = mountTextField(detailPathRoot, { label: t('说明字段'), placeholder: 'data.note', value: '', onChange: (value) => { formMapping = { ...formMapping, detailPath: value }; clearTest(); } });
+advancedGrid.append(planPathRoot, detailPathRoot);
+advanced.append(advancedGrid);
+
+const customError = el('p', 'bx-field-error');
+customError.hidden = true;
+customRoot.append(customHead, customHint, customError, customGrid, mapping, advanced);
+
 const testNote = el('div');
 const formActions = el('div', 'bx-form-actions');
-const test = mountButton(formActions, { label: '测试连接', variant: 'outline', size: 'sm', onClick: () => { void testRelay(); } });
+const test = mountButton(formActions, { label: t('测试连接'), variant: 'outline', size: 'sm', onClick: () => { void testRelay(); } });
 const saveRoot = el('span');
-const save = mountButton(saveRoot, { label: '保存', size: 'sm', onClick: () => {} });
+const save = mountButton(saveRoot, { label: t('保存'), size: 'sm', onClick: () => {} });
 saveRoot.querySelector('button')!.type = 'submit';
 formActions.append(saveRoot);
-form.append(nameRoot, urlRoot, keyRoot, testNote, formActions);
+form.append(nameRoot, kindRoot, urlRoot, keyRoot, customRoot, testNote, formActions);
 editorRoot.append(editorHead, editorIntro, form);
 management.append(managementContent, editorRoot);
-const tabs = !IS_SECTION ? mountTabs(tabRoot, { items: [{ id: 'overview', label: '总览' }, { id: 'relays', label: '中转站' }], activeId: 'overview', onChange: (id) => {
+const tabs = !IS_SECTION ? mountTabs(tabRoot, { items: [{ id: 'overview', label: t('总览') }, { id: 'relays', label: t('接口') }], activeId: 'overview', onChange: (id) => {
   activeView = id === 'relays' ? 'relays' : 'overview';
   render();
   if (activeView === 'relays') void loadRelays();
@@ -161,26 +243,69 @@ const inputs = [nameRoot, urlRoot, keyRoot].map((field, index) => {
   const note = field.querySelector('.oc-sdk-field-note')!;
   input.id = ['relay-name', 'relay-url', 'relay-key'][index];
   input.name = input.id;
-  input.setAttribute('aria-label', ['名称', '服务地址', 'API Key'][index]);
+  input.setAttribute('aria-label', [t('名称'), t('服务地址'), 'API Key'][index]);
   input.autocomplete = index === 2 ? 'new-password' : 'off';
   input.spellcheck = false;
-  input.maxLength = [60, 2048, 4096][index];
+  input.maxLength = [60, 4096, 4096][index];
   note.id = `${input.id}-hint`;
   input.setAttribute('aria-describedby', note.id);
   return input;
 });
 inputs[1].inputMode = 'url';
-const clearTest = (): void => { testNote.replaceChildren(); };
+const customFields = [methodField, authHeaderField, authSchemeField, headersField, bodyField, balancePathField, unitField, usedPathField, limitPathField, usedPercentPathField, resetAtPathField, windowLabelField, planPathField, detailPathField];
+const clearTest = (): void => { testNote.replaceChildren(); customError.hidden = true; };
+const syncMethod = (): void => {
+  bodyRoot.hidden = formMethod !== 'POST';
+  methodField.update({ value: formMethod });
+};
+syncMethod();
+const syncKind = (): void => {
+  const custom = formKind === 'custom';
+  customRoot.hidden = !custom;
+  kindField.update({ value: formKind });
+  urlField.update({
+    label: custom ? t('请求地址') : t('服务地址'),
+    placeholder: custom ? 'https://api.example.com/v1/balance' : 'https://relay.example.com',
+    helper: custom ? t('填写完整接口地址，包含路径；例如 https://api.example.com/v1/balance。') : t('可粘贴网站地址或以 /v1 结尾的 API 地址。'),
+  });
+  inputs[1].setAttribute('aria-label', custom ? t('请求地址') : t('服务地址'));
+};
+const applyCustomForm = (custom?: CustomRequest): void => {
+  const value = custom ?? EMPTY_CUSTOM_REQUEST;
+  formMethod = value.method;
+  formAuthHeader = value.authHeader;
+  formAuthScheme = value.authScheme;
+  formHeaders = value.headers;
+  formBody = value.body;
+  formMapping = custom ? { ...value.mapping } : { ...EMPTY_CUSTOM_MAPPING, windowLabel: t('额度') };
+  methodField.update({ value: formMethod });
+  syncMethod();
+  authHeaderField.update({ value: formAuthHeader });
+  authSchemeField.update({ value: formAuthScheme });
+  headersField.update({ value: formHeaders });
+  bodyField.update({ value: formBody });
+  balancePathField.update({ value: formMapping.balancePath });
+  unitField.update({ value: formMapping.unit });
+  usedPathField.update({ value: formMapping.usedPath });
+  limitPathField.update({ value: formMapping.limitPath });
+  usedPercentPathField.update({ value: formMapping.usedPercentPath });
+  resetAtPathField.update({ value: formMapping.resetAtPath });
+  windowLabelField.update({ value: formMapping.windowLabel });
+  planPathField.update({ value: formMapping.planPath });
+  detailPathField.update({ value: formMapping.detailPath });
+};
 const syncBusy = (): void => {
   const busy = operation !== null;
   nameField.update({ disabled: busy });
+  kindField.update({ disabled: busy });
   urlField.update({ disabled: busy });
   keyField.update({ disabled: busy });
+  for (const field of customFields) field.update({ disabled: busy });
   cancel.update({ disabled: busy });
   reveal.update({ disabled: busy });
   add.update({ disabled: busy || Boolean(relayError) || loadingRelays });
-  test.update({ disabled: busy, loading: operation === 'test', label: operation === 'test' ? '测试中…' : '测试连接' });
-  save.update({ disabled: busy, loading: operation === 'save', label: operation === 'save' ? '保存中…' : editor === 'new' ? '添加中转站' : '保存更改' });
+  test.update({ disabled: busy, loading: operation === 'test', label: operation === 'test' ? t('测试中…') : t('测试连接') });
+  save.update({ disabled: busy, loading: operation === 'save', label: operation === 'save' ? t('保存中…') : editor === 'new' ? t('添加接口') : t('保存更改') });
 };
 function openEditor(value: 'new' | PublicRelay): void {
   if (operation) return;
@@ -189,11 +314,14 @@ function openEditor(value: 'new' | PublicRelay): void {
   formName = value === 'new' ? '' : value.name;
   formUrl = value === 'new' ? '' : value.baseUrl;
   formKey = '';
+  formKind = value === 'new' ? 'auto' : value.kind;
   showKey = false;
+  applyCustomForm(value === 'new' ? undefined : value.custom);
   nameField.update({ value: formName, error: undefined });
   urlField.update({ value: formUrl, error: undefined });
-  keyField.update({ value: '', error: undefined, password: true, placeholder: value === 'new' ? '填写该站点的 API Key' : '留空保留现有密钥', helper: value === 'new' ? '保存后不会显示完整密钥。' : '留空保留现有密钥；更换站点时需重新填写。' });
-  reveal.update({ label: '显示密钥' });
+  keyField.update({ value: '', error: undefined, password: true, placeholder: value === 'new' ? t('填写该站点的 API Key') : t('留空保留现有密钥'), helper: value === 'new' ? t('保存后不会显示完整密钥。') : t('留空保留现有密钥；更换站点时需重新填写。') });
+  reveal.update({ label: t('显示密钥') });
+  syncKind();
   clearTest();
   activeView = 'relays';
   render();
@@ -209,18 +337,75 @@ function closeEditor(): void {
   render();
   managementHead.querySelector('button')?.focus();
 }
-const validate = (requireName: boolean): { name: string; baseUrl: string; apiKey: string; id?: string } | null => {
+type RelayDraft = {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  kind: RelayKind;
+  custom?: CustomRequest;
+  id?: string;
+};
+
+const validate = (requireName: boolean): RelayDraft | null => {
   nameField.update({ error: undefined }); urlField.update({ error: undefined }); keyField.update({ error: undefined });
+  customError.hidden = true;
   let first: HTMLInputElement | null = null;
-  if (requireName && !formName.trim()) { nameField.update({ error: '为这个连接取一个便于识别的名称。' }); first = inputs[0]; }
+  if (requireName && !formName.trim()) { nameField.update({ error: t('为这个连接取一个便于识别的名称。') }); first = inputs[0]; }
   let baseUrl = '';
-  try { baseUrl = normalizeRelayUrl(formUrl); }
-  catch (error) { urlField.update({ error: describeError(error) }); first ??= inputs[1]; }
+  try {
+    baseUrl = formKind === 'custom' ? normalizeEndpointUrl(formUrl) : normalizeRelayUrl(formUrl);
+  } catch (error) { urlField.update({ error: describeError(error) }); first ??= inputs[1]; }
   let needsKey = editor === 'new';
-  if (baseUrl && editor && editor !== 'new') needsKey = changesRelayOrigin(editor.baseUrl, baseUrl);
-  if (needsKey && !formKey.trim()) { keyField.update({ error: editor === 'new' ? '请填写 API Key。' : '更换站点时，请填写新站点的 API Key。' }); first ??= inputs[2]; }
+  if (baseUrl && editor && editor !== 'new') {
+    needsKey = formKind === 'custom' || editor.kind === 'custom'
+      ? changesEndpointOrigin(editor.baseUrl, baseUrl)
+      : changesRelayOrigin(editor.baseUrl, baseUrl);
+  }
+  if (needsKey && !formKey.trim()) { keyField.update({ error: editor === 'new' ? t('请填写 API Key。') : t('更换接口时，请填写接口的 API Key。') }); first ??= inputs[2]; }
+
+  let custom: CustomRequest | undefined;
+  if (formKind === 'custom') {
+    const problem = (() => {
+      const mapping = {
+        ...formMapping,
+        balancePath: formMapping.balancePath.trim(),
+        unit: formMapping.unit.trim() || 'USD',
+        usedPath: formMapping.usedPath.trim(),
+        limitPath: formMapping.limitPath.trim(),
+        usedPercentPath: formMapping.usedPercentPath.trim(),
+        resetAtPath: formMapping.resetAtPath.trim(),
+        planPath: formMapping.planPath.trim(),
+        detailPath: formMapping.detailPath.trim(),
+        windowLabel: formMapping.windowLabel.trim() || t('额度'),
+      };
+      if (formMethod === 'GET' && formBody.trim()) return t('GET 请求不能包含请求体。');
+      if (!mapping.balancePath && !mapping.usedPath && !mapping.limitPath && !mapping.usedPercentPath) return t('请至少填写余额字段或额度字段。');
+      if (!mapping.usedPercentPath && (Boolean(mapping.usedPath) !== Boolean(mapping.limitPath))) return t('请同时填写已用字段和总额字段，或填写已用百分比字段。');
+      custom = {
+        method: formMethod,
+        authHeader: formAuthHeader.trim(),
+        authScheme: formAuthScheme,
+        headers: formHeaders,
+        body: formBody,
+        mapping,
+      };
+      return null;
+    })();
+    if (problem) {
+      customError.textContent = problem;
+      customError.hidden = false;
+      first ??= balancePathRoot.querySelector('input');
+    }
+  }
   if (first) { first.focus(); return null; }
-  return { name: formName.trim(), baseUrl, apiKey: formKey.trim(), ...(editor && editor !== 'new' ? { id: editor.id } : {}) };
+  return {
+    name: formName.trim(),
+    baseUrl,
+    apiKey: formKey.trim(),
+    kind: formKind,
+    ...(custom ? { custom } : {}),
+    ...(editor && editor !== 'new' ? { id: editor.id } : {}),
+  };
 };
 async function testRelay(): Promise<void> {
   if (operation || !editor) return;
@@ -229,10 +414,21 @@ async function testRelay(): Promise<void> {
   operation = 'test'; clearTest(); syncBusy();
   try {
     const result = await request('POST', '/relays/test', { body: data });
-    if (result.ok !== true) throw new Error(typeof result.error === 'string' ? result.error : '连接未成功，请检查地址和密钥。');
+    if (result.ok !== true) throw new Error(typeof result.error === 'string' ? serverText(result.error) ?? result.error : t('连接未成功，请检查地址和密钥。'));
     const balance = result.balance as { value?: unknown; unit?: unknown } | null;
-    const amount = balance && asNumber(balance.value) !== null ? ` · 可用 ${formatBalance(asNumber(balance.value), typeof balance.unit === 'string' ? balance.unit : 'USD', locale)}` : '';
-    testNote.replaceChildren(noteElement(`连接成功${amount}。尚未保存。`, 'success'));
+    const windows = Array.isArray(result.windows) ? result.windows.length : 0;
+    const amount = balance && asNumber(balance.value) !== null
+      ? t(' · 可用 {amount}', { amount: formatBalance(asNumber(balance.value), unitLabel(typeof balance.unit === 'string' ? balance.unit : 'USD'), locale) })
+      : windows > 0 ? t(' · {count} 个额度窗口', { count: windows }) : '';
+    const note = noteElement(t('连接成功{amount}。尚未保存。', { amount }), 'success');
+    if (result.raw !== undefined) {
+      const raw = el('details', 'bx-raw');
+      raw.append(el('summary', '', t('查看原始响应')));
+      const text = JSON.stringify(result.raw, null, 2);
+      raw.append(el('pre', 'bx-raw-json', text.length > 12_000 ? `${text.slice(0, 12_000)}\n…` : text));
+      note.append(raw);
+    }
+    testNote.replaceChildren(note);
   } catch (error) { testNote.replaceChildren(noteElement(describeError(error), 'error')); }
   finally { operation = null; syncBusy(); }
 }
@@ -250,7 +446,7 @@ async function saveRelay(): Promise<void> {
     formKey = '';
     keyField.update({ value: '', password: true });
     activeView = 'overview';
-    notice = { text: `已保存“${data.name}”。`, tone: 'success' };
+    notice = { text: t('已保存“{name}”。', { name: data.name }), tone: 'success' };
     render();
     await loadBalances(true);
   } catch (error) { testNote.replaceChildren(noteElement(describeError(error), 'error')); }
@@ -271,25 +467,31 @@ async function deleteRelay(relay: PublicRelay): Promise<void> {
   finally { operation = null; render(); }
 }
 const setRelays = (payload: Record<string, unknown>): void => {
-  if (!Array.isArray(payload.relays)) throw new Error('服务未返回中转站列表，请重试。');
+  if (!Array.isArray(payload.relays)) throw new Error(t('服务未返回接口列表，请重试。'));
   relays = payload.relays.map(parseRelay).filter((relay): relay is PublicRelay => relay !== null);
   relayError = null;
 };
 
+const unitLabel = (unit: string): string => unit === '积分' ? t('积分') : unit;
+const windowLabel = (window: UsageWindow): string => serverText(window.label) ?? window.label;
+const providerError = (provider: Provider): string => serverText(provider.error) ?? t('查询失败，请刷新重试。');
+
 const renderWindow = (window: UsageWindow): HTMLElement => {
   const node = el('div', 'bx-window');
+  const label = windowLabel(window);
   node.dataset.tone = window.usedPercent >= 90 ? 'error' : window.usedPercent >= 70 ? 'warning' : 'normal';
   const row = el('div', 'bx-window-head');
-  row.append(el('span', 'bx-window-label', window.label), el('span', 'bx-percent', `已用 ${Math.round(window.usedPercent)}%`));
+  row.append(el('span', 'bx-window-label', label), el('span', 'bx-percent', t('已用 {percent}%', { percent: Math.round(window.usedPercent) })));
   const track = el('div', 'bx-track');
   track.setAttribute('role', 'progressbar');
-  track.setAttribute('aria-label', `${window.label}已用额度`);
+  track.setAttribute('aria-label', t('{label}已用额度', { label }));
   track.setAttribute('aria-valuemin', '0'); track.setAttribute('aria-valuemax', '100');
   track.setAttribute('aria-valuenow', String(Math.round(window.usedPercent)));
   const fill = el('div', 'bx-fill'); fill.style.width = `${Math.max(0, Math.min(100, window.usedPercent))}%`; track.append(fill);
   const foot = el('div', 'bx-window-foot');
-  if (window.detail) foot.append(el('span', '', window.detail));
-  const reset = formatReset(window.resetAt, locale);
+  const detail = serverText(window.detail);
+  if (detail) foot.append(el('span', '', detail));
+  const reset = formatReset(window.resetAt, locale, Date.now(), t);
   if (reset) { const text = el('span', 'bx-reset', reset); text.title = new Date(window.resetAt!).toLocaleString(locale); foot.append(text); }
   node.append(row, track);
   if (foot.childNodes.length) node.append(foot);
@@ -339,29 +541,30 @@ const renderStatusProvider = (provider: Provider): HTMLElement => {
 
   const hasData = Boolean(provider.balance || provider.windows.length);
   const statusText = !provider.ok
-    ? provider.error ?? '查询失败，请刷新重试。'
-    : !hasData ? '已连接，但接口暂未提供余额或额度。' : null;
+    ? providerError(provider)
+    : !hasData ? t('已连接，但接口暂未提供余额或额度。') : null;
   if (statusText) {
     const status = el('span', 'bx-status-status', statusText);
     status.title = statusText;
     if (!provider.ok) {
       status.setAttribute('role', 'alert');
-      if (provider.stale && provider.updatedAt) status.title = `${statusText} · 以上为 ${formatTime(provider.updatedAt, locale, true)} 的成功结果。`;
+      if (provider.stale && provider.updatedAt) status.title = t('{status} · 以上为 {time} 的成功结果。', { status: statusText, time: formatTime(provider.updatedAt, locale, true) });
     }
     head.append(status);
   }
-  const headTitle = [provider.plan, statusText].filter(Boolean).join(' · ');
+  const plan = serverText(provider.plan);
+  const headTitle = [plan, statusText].filter(Boolean).join(' · ');
   if (headTitle) head.title = headTitle;
   node.append(head);
 
   for (const window of provider.windows) {
-    const reset = formatReset(window.resetAt, locale);
+    const reset = formatReset(window.resetAt, locale, Date.now(), t);
     const compactReset = formatStatusReset(window.resetAt, locale);
     const tone = window.usedPercent >= 80 ? 'error' : window.usedPercent >= 50 ? 'warning' : undefined;
-    node.append(statusRow(window.label, `${Math.round(window.usedPercent)}%`, {
+    node.append(statusRow(windowLabel(window), `${Math.round(window.usedPercent)}%`, {
       reset: compactReset ?? undefined,
       tone,
-      title: [window.detail, reset].filter(Boolean).join(' · ') || undefined,
+      title: [serverText(window.detail), reset].filter(Boolean).join(' · ') || undefined,
     }));
   }
 
@@ -369,15 +572,15 @@ const renderStatusProvider = (provider: Provider): HTMLElement => {
   const showBalance = Boolean(balance && balance.value !== null
     && !(provider.id === 'command-code' && provider.windows.length > 0));
   if (showBalance && balance) {
-    node.append(statusRow('额度余额', formatBalance(balance.value, balance.unit, locale), {
-      title: provider.stale ? '上次成功查询的余额' : undefined,
+    node.append(statusRow(t('额度余额'), formatBalance(balance.value, unitLabel(balance.unit), locale), {
+      title: provider.stale ? t('上次成功查询的余额') : undefined,
     }));
   }
 
   if (!provider.ok && hasData) {
-    const error = el('div', 'bx-status-row bx-status-error', provider.error ?? '查询失败，请刷新重试。');
+    const error = el('div', 'bx-status-row bx-status-error', providerError(provider));
     error.setAttribute('role', 'alert');
-    if (provider.stale && provider.updatedAt) error.title = `以上为 ${formatTime(provider.updatedAt, locale, true)} 的成功结果。`;
+    if (provider.stale && provider.updatedAt) error.title = t('以上为 {time} 的成功结果。', { time: formatTime(provider.updatedAt, locale, true) });
     node.append(error);
   }
 
@@ -391,50 +594,55 @@ const renderProvider = (provider: Provider): HTMLElement => {
   const identity = el('div');
   const name = el('h2', 'bx-name', provider.name); name.title = provider.name;
   identity.append(name);
-  if (provider.plan) identity.append(el('div', 'bx-plan', provider.plan));
+  const plan = serverText(provider.plan);
+  if (plan) identity.append(el('div', 'bx-plan', plan));
   const balance = el('div', 'bx-balance');
   const value = provider.balance?.value ?? null;
   const unit = provider.balance?.unit ?? '';
-  balance.append(el('strong', 'bx-amount', formatBalance(value, unit, locale)), el('span', 'bx-amount-label', value !== null ? (provider.stale ? '上次余额' : unit === '积分' ? '剩余积分' : '可用余额') : '余额未提供'));
+  balance.append(el('strong', 'bx-amount', formatBalance(value, unitLabel(unit), locale)), el('span', 'bx-amount-label', value !== null ? (provider.stale ? t('上次余额') : unit === '积分' ? t('剩余积分') : t('可用余额')) : t('余额未提供')));
   header.append(identity, balance);
   node.append(header);
-  if (provider.detail) node.append(el('p', 'bx-detail', provider.detail));
+  const detail = serverText(provider.detail);
+  if (detail) node.append(el('p', 'bx-detail', detail));
   if (provider.windows.length) { const windows = el('div', 'bx-windows'); windows.append(...provider.windows.map(renderWindow)); node.append(windows); }
   if (!provider.ok) {
-    const warning = noteElement(provider.error ?? '查询失败，请刷新重试。', provider.stale ? 'warning' : 'error');
-    if (provider.stale && provider.updatedAt) warning.append(el('p', '', `以上为 ${formatTime(provider.updatedAt, locale, true)} 的成功结果。`));
+    const warning = noteElement(providerError(provider), provider.stale ? 'warning' : 'error');
+    if (provider.stale && provider.updatedAt) warning.append(el('p', '', t('以上为 {time} 的成功结果。', { time: formatTime(provider.updatedAt, locale, true) })));
     node.append(warning);
-  } else if (!provider.balance && !provider.windows.length && !provider.detail) node.append(el('p', 'bx-detail', '已连接，但接口暂未提供余额或额度。'));
+  } else if (!provider.balance && !provider.windows.length && !provider.detail) node.append(el('p', 'bx-detail', t('已连接，但接口暂未提供余额或额度。')));
   return node;
 };
-const empty = (title: string, body: string, action?: () => void, label = '添加中转站'): HTMLElement => {
+const empty = (title: string, body: string, action?: () => void, label = t('添加接口')): HTMLElement => {
   const node = el('div', 'bx-empty'); node.append(el('h2', '', title), el('p', '', body));
   if (action) mountButton(node, { label, size: 'sm', onClick: action });
   return node;
 };
 function renderRelays(): void {
   relayList.replaceChildren();
+  const relayErrorText = relayError ? describeError(relayError) : '';
   if (relayError) {
-    const message = noteElement(relayError, 'error');
-    mountButton(message, { label: '重试', size: 'sm', variant: 'ghost', onClick: () => { void loadRelays(); } });
+    const message = noteElement(relayErrorText, 'error');
+    mountButton(message, { label: t('重试'), size: 'sm', variant: 'ghost', onClick: () => { void loadRelays(); } });
     relayList.append(message);
   }
-  if (loadingRelays && !relays.length) { relayList.append(el('p', 'bx-detail', '正在读取中转站…')); return; }
-  if (!relays.length && !relayError) relayList.append(empty('还没有中转站', '添加一个连接后，就能在总览里查看它的余额与额度。'));
+  if (loadingRelays && !relays.length) { relayList.append(el('p', 'bx-detail', t('正在读取接口…'))); return; }
+  if (!relays.length && !relayError) relayList.append(empty(t('还没有接口'), t('添加一个接口后，就能在总览里查看它的余额与额度。')));
   for (const relay of relays) {
     const row = el('div', 'bx-relay');
     const line = el('div', 'bx-relay-line');
     const info = el('div', 'bx-relay-info');
-    info.append(el('h3', 'bx-relay-name', relay.name), el('p', 'bx-relay-url', relay.baseUrl));
+    const nameLine = el('div', 'bx-relay-name-line');
+    nameLine.append(el('h3', 'bx-relay-name', relay.name), el('span', 'bx-relay-kind', relay.kind === 'custom' ? t('自定义') : t('自动')));
+    info.append(nameLine, el('p', 'bx-relay-url', relay.baseUrl));
     const actions = el('div', 'bx-relay-actions');
-    mountButton(actions, { label: '编辑', size: 'sm', variant: 'ghost', disabled: operation !== null, onClick: () => openEditor(relay) });
-    mountButton(actions, { label: '移除', size: 'sm', variant: 'ghost', disabled: operation !== null, onClick: () => { pendingDelete = relay.id; renderRelays(); } });
+    mountButton(actions, { label: t('编辑'), size: 'sm', variant: 'ghost', disabled: operation !== null, onClick: () => openEditor(relay) });
+    mountButton(actions, { label: t('移除'), size: 'sm', variant: 'ghost', disabled: operation !== null, onClick: () => { pendingDelete = relay.id; renderRelays(); } });
     line.append(info, actions); row.append(line);
     if (pendingDelete === relay.id) {
-      const confirmation = noteElement(`移除“${relay.name}”的连接？已保存的密钥会从本地配置中删除。`);
+      const confirmation = noteElement(t('移除“{name}”的接口？已保存的密钥会从本地配置中删除。', { name: relay.name }));
       const buttons = el('div', 'bx-actions');
-      mountButton(buttons, { label: '取消', size: 'sm', variant: 'ghost', disabled: operation !== null, onClick: () => { pendingDelete = null; renderRelays(); } });
-      mountButton(buttons, { label: '确认移除', size: 'sm', variant: 'destructive', loading: operation === 'delete', onClick: () => { void deleteRelay(relay); } });
+      mountButton(buttons, { label: t('取消'), size: 'sm', variant: 'ghost', disabled: operation !== null, onClick: () => { pendingDelete = null; renderRelays(); } });
+      mountButton(buttons, { label: t('确认移除'), size: 'sm', variant: 'destructive', loading: operation === 'delete', onClick: () => { void deleteRelay(relay); } });
       confirmation.append(buttons); row.append(confirmation);
     }
     relayList.append(row);
@@ -443,8 +651,8 @@ function renderRelays(): void {
 const syncStatusControls = (): void => {
   if (!IS_SECTION || !statusControlsSupported) return;
   const controls: GuestStatusControl[] = [
-    { kind: 'button', id: 'refresh', label: '刷新', disabled: loading || !initialized },
-    { kind: 'button', id: 'manage', label: '管理', disabled: !initialized },
+    { kind: 'button', id: 'refresh', label: t('刷新'), disabled: loading || !initialized },
+    { kind: 'button', id: 'manage', label: t('管理'), disabled: !initialized },
   ];
   const signature = JSON.stringify(controls);
   if (signature === statusControlSignature) return;
@@ -458,10 +666,10 @@ const syncStatusControls = (): void => {
 
 function render(): void {
   const errors = providers.filter((provider) => !provider.ok).length;
-  count.textContent = IS_SECTION ? '' : `${providers.length} 个服务${errors ? ` · ${errors} 项待重试` : ''}`;
-  time.textContent = loading ? '正在更新…' : fetchedAt ? `更新于 ${formatTime(fetchedAt, locale, new Date(fetchedAt).toDateString() !== new Date().toDateString())}` : '';
+  count.textContent = IS_SECTION ? '' : `${t('{count} 个服务', { count: providers.length })}${errors ? t(' · {count} 项待重试', { count: errors }) : ''}`;
+  time.textContent = loading ? t('正在更新…') : fetchedAt ? t('更新于 {time}', { time: formatTime(fetchedAt, locale, new Date(fetchedAt).toDateString() !== new Date().toDateString()) }) : '';
   time.title = fetchedAt ? new Date(fetchedAt).toLocaleString(locale) : '';
-  refresh.update({ loading, disabled: !initialized, label: loading ? '刷新中' : '刷新' });
+  refresh.update({ loading, disabled: !initialized, label: loading ? t('刷新中') : t('刷新') });
   overview.hidden = !IS_SECTION && activeView !== 'overview';
   management.hidden = IS_SECTION || activeView !== 'relays';
   footer.hidden = IS_SECTION || providers.length === 0;
@@ -469,21 +677,22 @@ function render(): void {
   alerts.replaceChildren();
   if (navigationMessage) alerts.append(noteElement(navigationMessage));
   if (notice) alerts.append(noteElement(notice.text, notice.tone));
-  if (loadError) alerts.append(noteElement(`${loadError}${providers.length ? ' 已保留上次显示的数据。' : ''}`, 'error'));
+  const loadErrorText = loadError ? describeError(loadError) : '';
+  if (loadError) alerts.append(noteElement(`${loadErrorText}${providers.length ? ` ${t('已保留上次显示的数据。')}` : ''}`, 'error'));
   list.replaceChildren();
   if (!initialized || (loading && !providers.length)) {
-    const pending = el('div', 'bx-loading'); mountSpinner(pending, { label: initialized ? '正在查询余额…' : '正在连接 OpenChamber…' }); list.append(pending);
+    const pending = el('div', 'bx-loading'); mountSpinner(pending, { label: initialized ? t('正在查询余额…') : t('正在连接 OpenChamber…') }); list.append(pending);
   } else if (!providers.length) {
-    list.append(empty(loadError ? '暂时无法读取余额' : '还没有可显示的余额', loadError ? '点击刷新重试，或检查扩展的本地服务权限。' : '在 OpenCode 配置 Command Code、StepFun，或添加中转站。', IS_SECTION ? undefined : () => openEditor('new')));
+    list.append(empty(loadError ? t('暂时无法读取余额') : t('还没有可显示的余额'), loadError ? t('点击刷新重试，或检查扩展的本地服务权限。') : t('在 OpenCode 配置 Command Code、StepFun，或添加接口。'), IS_SECTION ? undefined : () => openEditor('new')));
   } else list.append(...providers.map(IS_SECTION ? renderStatusProvider : renderProvider));
   syncStatusControls();
   if (!IS_SECTION) {
     const signature = `${activeView}:${relays.length}`;
     if (signature !== tabSignature) {
       const hadFocus = tabRoot.contains(document.activeElement);
-      tabs?.update({ activeId: activeView, items: [{ id: 'overview', label: '总览' }, { id: 'relays', label: '中转站', count: relays.length || undefined }] });
+      tabs?.update({ activeId: activeView, items: [{ id: 'overview', label: t('总览') }, { id: 'relays', label: t('接口'), count: relays.length || undefined }] });
       tabSignature = signature;
-      tabRoot.querySelector('[role="tablist"]')?.setAttribute('aria-label', '余额视图');
+      tabRoot.querySelector('[role="tablist"]')?.setAttribute('aria-label', t('余额视图'));
       for (const tab of tabRoot.querySelectorAll<HTMLElement>('[role="tab"]')) {
         tab.id = `balance-tab-${tab.dataset.id}`;
         tab.setAttribute('aria-controls', `balance-${tab.dataset.id}`);
@@ -496,7 +705,7 @@ function render(): void {
     }
     managementContent.hidden = editor !== null;
     editorRoot.hidden = editor === null;
-    editorTitle.textContent = editor === 'new' ? '添加中转站' : '编辑中转站';
+    editorTitle.textContent = editor === 'new' ? t('添加接口') : t('编辑接口');
     if (!editor) renderRelays();
     syncBusy();
   }
@@ -508,10 +717,10 @@ async function loadBalances(force = false): Promise<void> {
   try {
     const payload = await request('GET', '/balances', force ? { query: { refresh: '1' } } : {});
     if (generation !== loadGeneration) return;
-    if (!Array.isArray(payload.providers)) throw new Error('服务未返回有效的余额列表。');
+    if (!Array.isArray(payload.providers)) throw new Error(t('服务未返回有效的余额列表。'));
     providers = payload.providers.map(parseProvider).filter((provider): provider is Provider => provider !== null);
     fetchedAt = asNumber(payload.fetchedAt);
-  } catch (error) { if (generation === loadGeneration) loadError = describeError(error); }
+  } catch (error) { if (generation === loadGeneration) loadError = error; }
   finally { if (generation === loadGeneration) { loading = false; render(); } }
 }
 async function loadRelays(): Promise<void> {
@@ -519,21 +728,72 @@ async function loadRelays(): Promise<void> {
   const generation = ++relayGeneration;
   loadingRelays = true; relayError = null; render();
   try { const payload = await request('GET', '/relays'); if (generation === relayGeneration) setRelays(payload); }
-  catch (error) { if (generation === relayGeneration) relayError = describeError(error); }
+  catch (error) { if (generation === relayGeneration) relayError = error; }
   finally { if (generation === relayGeneration) { loadingRelays = false; render(); } }
 }
+const localize = (): void => {
+  app.setAttribute('aria-label', t('余额与额度'));
+  overview.setAttribute('aria-label', t('余额总览'));
+  footer.textContent = t('余额按服务分别显示。点击刷新，获取最新数据。');
+  management.setAttribute('aria-label', t('接口管理'));
+  managementIntro.textContent = t('管理用于查询余额的接口');
+  add.update({ label: t('添加接口') });
+  manage?.update({ label: t('管理') });
+  cancel.update({ label: t('取消') });
+  clearTest();
+  editorIntro.textContent = t('填写连接信息，可先测试再保存。');
+  nameField.update({ label: t('名称'), placeholder: t('例如：日常使用') });
+  kindField.update({
+    label: t('接口类型'),
+    options: [{ id: 'auto', label: t('自动识别中转站') }, { id: 'custom', label: t('自定义余额接口') }],
+  });
+  keyField.update({ label: 'API Key', placeholder: editor === 'new' ? t('填写该站点的 API Key') : t('留空保留现有密钥'), helper: editor === 'new' ? t('保存后不会显示完整密钥。') : t('留空保留现有密钥；更换站点时需重新填写。') });
+  reveal.update({ label: showKey ? t('隐藏密钥') : t('显示密钥') });
+  customHead.textContent = t('自定义接口设置');
+  customHint.textContent = t('按供应商文档填写请求地址和 JSON 字段路径；Key 只通过认证请求头发送。');
+  methodField.update({ label: t('请求方式'), options: [{ id: 'GET', label: 'GET' }, { id: 'POST', label: 'POST' }] });
+  syncMethod();
+  authHeaderField.update({ label: t('认证请求头'), helper: t('例如 Authorization 或 x-api-key；留空表示不添加认证。') });
+  authSchemeField.update({ label: t('认证方式'), options: [{ id: 'bearer', label: 'Bearer Token' }, { id: 'raw', label: t('原始值') }] });
+  headersField.update({ label: t('额外请求头'), helper: t('每行一个 Name: value，不要在这里填写 API Key。') });
+  bodyField.update({ label: t('请求体'), helper: t('仅 POST 使用；不要在这里填写 API Key。') });
+  mappingSummary.textContent = t('响应字段映射');
+  mappingHint.textContent = t('填写 JSON 路径，例如 data.balance 或 data.items[0].remaining。');
+  advancedSummary.textContent = t('高级字段');
+  balancePathField.update({ label: t('余额字段') });
+  unitField.update({ label: t('单位') });
+  usedPathField.update({ label: t('已用字段') });
+  limitPathField.update({ label: t('总额字段') });
+  usedPercentPathField.update({ label: t('已用百分比字段'), helper: t('百分比字段优先于已用/总额字段。') });
+  resetAtPathField.update({ label: t('重置时间字段') });
+  windowLabelField.update({ label: t('额度窗口名称'), placeholder: t('额度') });
+  planPathField.update({ label: t('套餐名称字段') });
+  detailPathField.update({ label: t('说明字段') });
+  inputs[0].setAttribute('aria-label', t('名称'));
+  inputs[2].setAttribute('aria-label', 'API Key');
+  syncKind();
+  tabSignature = '';
+  render();
+};
 host.onReady((context) => {
   applyHostReady(context, document.documentElement);
-  // The interface copy is Chinese; date formatting follows the host's Chinese locale.
-  locale = context.locale.startsWith('zh') ? context.locale : 'zh-CN';
-  document.documentElement.lang = locale;
+  const changed = i18n.setLocale(context.locale);
+  locale = i18n.locale;
+  applyDocumentLanguage(i18n);
+  document.title = t('余额');
   statusControlsSupported = IS_SECTION && context.features?.statusControls === true;
   if (IS_SECTION && !statusControlsSupported && !top.isConnected) app.prepend(top);
-  if (initialized) { render(); return; }
+  if (initialized) {
+    if (changed) { notice = null; localize(); }
+    else render();
+    return;
+  }
   initialized = true;
+  if (changed) localize();
   void loadBalances();
   if (!IS_SECTION) void loadRelays();
 });
+document.title = t('余额');
 if (IS_SECTION) {
   let lastHeight = -1;
   new ResizeObserver(() => {
