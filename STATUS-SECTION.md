@@ -111,6 +111,14 @@
 
 因此保留 `entry` + `setStatusControls`。将来若宿主给 `GuestStatusView` 增加品牌图标/富文本/摘要，或给状态控件增加图标与摘要字段，再重新评估。
 
+## 2.7.0 quota 角色
+
+2.7.0 新增的 `provides: ["quota"]` 是独立的宿主用量卡，不改变本文关于 `statusSection.source` 的结论。余额扩展继续保留 `entry` 状态分区，同时声明 quota 角色：
+
+- 「用量」卡由宿主绘制，一个扩展只有一张，多个供应商合并为带供应商名的窗口；
+- quota 路径只使用宿主随 `usage.read` 传入的、清单已授权的 provider 凭据；
+- 卡片的 3 分钟刷新是宿主行为，与状态分区的 `setStatusControls` 手动刷新、完整面板的显式缓存相互独立。
+
 ## 实现位置
 
 | 文件 | 职责 |
@@ -119,7 +127,8 @@
 | `src/panel/style.css` | `html[data-oc-surface="status"]` 下的透明背景、净 4px 缩进、行式布局和窄栏覆盖 |
 | `src/panel/format.ts` | 状态分区的重置时间格式（今天只显示时间） |
 | `src/panel/provider-icons.ts` | Command Code / StepFun 的内嵌 SVG |
-| `package.json` | `contributes.statusSection` 的标题、初始高度和入口 |
+| `src/service/quota.ts` | quota 请求校验与单卡窗口映射；不参与状态分区绘制 |
+| `package.json` | `contributes.statusSection`、`service.provides: ["quota"]` 与 `contributes.quota` |
 | `panel/section.html` / `panel/section.js` | 构建后的状态分区入口与脚本；不手改产物 |
 
 ## 验收清单

@@ -230,6 +230,104 @@ var parseCustomContribution = (body, mapping) => {
   };
 };
 
+// src/service/quota.ts
+var MAX_WINDOWS = 32;
+var MAX_LABEL = 128;
+var MAX_ERROR = 2e3;
+var isRecord = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+var truncate = (value, max = MAX_LABEL) => value.length > max ? `${value.slice(0, max - 1)}\u2026` : value;
+var readQuotaRequest = (body) => {
+  if (!isRecord(body)) return null;
+  if (body.v !== 1 || body.method !== "usage.read") return null;
+  if (typeof body.requestId !== "string" || !body.requestId || body.requestId.length > 200) return null;
+  if (typeof body.provider !== "string" || !body.provider || body.provider.length > 128) return null;
+  const input = body.input;
+  if (!isRecord(input) || !isRecord(input.credentials)) return null;
+  if (!Object.values(input.credentials).every(isRecord)) return null;
+  return {
+    requestId: body.requestId,
+    provider: body.provider,
+    credentials: input.credentials
+  };
+};
+var quotaCredential = (value) => {
+  if (!isRecord(value)) return null;
+  if (value.type === "api" && typeof value.key === "string" && value.key) {
+    return { key: value.key, kind: "api" };
+  }
+  if (value.type === "oauth" && typeof value.access === "string" && value.access) {
+    return { key: value.access, kind: "oauth" };
+  }
+  return null;
+};
+var uniqueKey = (windows, base) => {
+  if (!windows[base]) return base;
+  for (let index = 2; index < 100; index += 1) {
+    const candidate = `${truncate(base, MAX_LABEL - 5)} (${index})`;
+    if (!windows[candidate]) return candidate;
+  }
+  return truncate(base, MAX_LABEL);
+};
+var buildQuotaUsage = (input) => {
+  const windows = {};
+  let added = 0;
+  const add = (providerName, label, window) => {
+    if (added >= MAX_WINDOWS) return;
+    const key = uniqueKey(windows, truncate(`${providerName} \xB7 ${label}`));
+    windows[key] = window;
+    added += 1;
+  };
+  for (const provider of input.providers) {
+    const hasData = provider.ok && (provider.balance !== null || provider.windows.length > 0 || !!provider.detail);
+    if (provider.windows.length > 0) {
+      for (const window of provider.windows) {
+        add(provider.name, window.label, {
+          usedPercent: window.usedPercent,
+          ...window.resetAt === null ? {} : { resetAt: window.resetAt },
+          ...window.detail ? { valueLabel: truncate(window.detail) } : {}
+        });
+      }
+    }
+    if (provider.balance) {
+      add(provider.name, "\u4F59\u989D", {
+        usedPercent: null,
+        valueLabel: truncate(provider.balance.label)
+      });
+    }
+    if (provider.windows.length === 0 && !provider.balance) {
+      add(provider.name, "\u72B6\u6001", {
+        usedPercent: null,
+        valueLabel: truncate(
+          provider.ok ? provider.detail ?? "\u5DF2\u8FDE\u63A5\uFF0C\u63A5\u53E3\u672A\u63D0\u4F9B\u4F59\u989D\u6216\u989D\u5EA6" : provider.error ?? "\u67E5\u8BE2\u5931\u8D25"
+        )
+      });
+    } else if (!provider.ok) {
+      add(provider.name, "\u72B6\u6001", {
+        usedPercent: null,
+        valueLabel: truncate(provider.error ?? "\u4E0A\u6B21\u7ED3\u679C\u4FDD\u7559\uFF0C\u672C\u6B21\u67E5\u8BE2\u5931\u8D25")
+      });
+    } else if (!hasData) {
+      add(provider.name, "\u72B6\u6001", {
+        usedPercent: null,
+        valueLabel: "\u5DF2\u8FDE\u63A5\uFF0C\u63A5\u53E3\u672A\u63D0\u4F9B\u4F59\u989D\u6216\u989D\u5EA6"
+      });
+    }
+  }
+  const plans = [...new Set(
+    input.providers.map((provider) => provider.plan).filter((plan) => !!plan)
+  )];
+  const failures = input.providers.filter((provider) => !provider.ok).map((provider) => `${provider.name}\uFF1A${provider.error ?? "\u67E5\u8BE2\u5931\u8D25"}`);
+  const live = input.providers.some((provider) => provider.ok);
+  const usage = added > 0 ? { windows } : null;
+  return {
+    ok: live,
+    configured: input.configured,
+    ...failures.length > 0 ? { error: truncate(failures.slice(0, 2).join("\uFF1B"), MAX_ERROR) } : {},
+    planLabel: plans.length > 0 ? truncate(plans.join(" \xB7 ")) : null,
+    usage
+  };
+};
+
 // src/service/main.ts
 var port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
 var token = process.env.OPENCHAMBER_SERVICE_TOKEN ?? "";
@@ -588,8 +686,7 @@ var BUILTIN_PROVIDERS = [
   { id: "command-code", name: "Command Code", credentialIds: ["command-code", "commandcode"], fetch: fetchCommandCode },
   { id: "stepfun", name: "StepFun", credentialIds: ["stepfun-step-plan", "stepfun"], fetch: fetchStepfun }
 ];
-var buildBalances = async (previous) => {
-  const credentials = await readCredentials();
+var buildProviders = async (previous, credentials) => {
   const relays = readConfig().relays;
   const jobs = [
     ...BUILTIN_PROVIDERS.map((provider) => ({
@@ -624,7 +721,36 @@ var buildBalances = async (previous) => {
       }
     })
   );
-  return { fetchedAt: Date.now(), providers: providers.filter((provider) => provider !== null) };
+  return providers.filter((provider) => provider !== null);
+};
+var buildBalances = async (previous) => {
+  const credentials = await readCredentials();
+  return { fetchedAt: Date.now(), providers: await buildProviders(previous, credentials) };
+};
+var buildQuotaData = async (raw) => {
+  try {
+    const credentials = {};
+    for (const [id, value] of Object.entries(raw)) {
+      const credential = quotaCredential(value);
+      if (credential) credentials[id] = credential;
+    }
+    const relays = readConfig().relays;
+    const configured = relays.length > 0 || BUILTIN_PROVIDERS.some(
+      (provider) => firstCredential(credentials, provider.credentialIds) !== null
+    );
+    if (!configured) {
+      return {
+        ok: false,
+        configured: true,
+        error: "\u5728\u300C\u4F59\u989D\u300D\u9762\u677F\u6DFB\u52A0\u63A5\u53E3\uFF0C\u6216\u5728 OpenChamber Providers \u767B\u5F55 Command Code/StepFun",
+        usage: null
+      };
+    }
+    const providers = await buildProviders([], credentials);
+    return buildQuotaUsage({ providers, configured });
+  } catch (error) {
+    return { ok: false, configured: true, error: describeError(error), usage: null };
+  }
 };
 var balanceCache = createBalanceCache(buildBalances);
 var describeError = (error) => {
@@ -758,6 +884,14 @@ var handle = async (req, res) => {
     json(res, 200, { ok: true });
   } else if (url.pathname === "/balances" && req.method === "GET") {
     json(res, 200, await balanceCache.get(url.searchParams.get("refresh") === "1"));
+  } else if (url.pathname === "/quota" && req.method === "POST") {
+    const body = await readBody(req);
+    const request = readQuotaRequest(body);
+    if (!request) {
+      json(res, 400, { ok: false, error: { message: "invalid quota request" } });
+      return;
+    }
+    json(res, 200, { ok: true, data: await buildQuotaData(request.credentials) });
   } else if (url.pathname === "/relays" && req.method === "GET") {
     json(res, 200, { relays: readConfig().relays.map(publicRelay) });
   } else if (url.pathname === "/relays/test" && req.method === "POST") {

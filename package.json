@@ -1,14 +1,13 @@
 {
   "name": "openchamber-balance",
-  "version": "0.2.12",
+  "version": "0.3.0",
   "private": true,
-  "license": "MIT",
   "type": "module",
   "description": "OpenChamber 余额与额度：清晰总览、中转站管理与可靠的手动刷新。",
   "openchamber": {
     "apiVersion": 1,
     "engines": {
-      "openchamber": ">=1.24.0"
+      "openchamber": ">=2.7.0"
     },
     "contributes": {
       "panel": {
@@ -25,7 +24,18 @@
       "service": {
         "entry": "service/main.js",
         "runtime": "host",
-        "permissions": {}
+        "permissions": {},
+        "provides": [
+          "quota"
+        ]
+      },
+      "quota": {
+        "providers": [
+          "command-code",
+          "commandcode",
+          "stepfun-step-plan",
+          "stepfun"
+        ]
       }
     }
   },
@@ -38,7 +48,7 @@
     "preview": "node scripts/preview.mjs"
   },
   "devDependencies": {
-    "@openchamber/sdk": "2.5.2",
+    "@openchamber/sdk": "2.7.0",
     "@types/node": "^22.20.5",
     "esbuild": "^0.25.0",
     "typescript": "^5.6.0"
@@ -47,5 +57,6 @@
     "panel/",
     "service/",
     "README.md"
-  ]
+  ],
+  "license": "MIT"
 }

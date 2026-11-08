@@ -66,6 +66,21 @@ test('local HTTP service with isolated files and a synthetic upstream', async (t
   await t.test('all routes require host authentication', async () => {
     assert.equal((await call('/health', 'GET', undefined, false)).status, 401);
     assert.equal((await call('/balances', 'GET', undefined, false)).status, 401);
+    assert.equal((await call('/quota', 'POST', {}, false)).status, 401);
+  });
+  await t.test('quota route says where to configure when no source exists', async () => {
+    const result = await call('/quota', 'POST', {
+      v: 1,
+      requestId: 'quota-empty',
+      method: 'usage.read',
+      provider: 'ext-balance',
+      input: { credentials: {} },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.data.ok, true);
+    assert.equal(result.data.data.configured, true);
+    assert.match(result.data.data.error, /余额/);
+    assert.equal(result.data.data.usage, null);
   });
   await t.test('connection test does not persist configuration', async () => {
     const result = await call('/relays/test', 'POST', { baseUrl: base + '/v1/', apiKey: 'fixture-only-key' });
@@ -95,6 +110,35 @@ test('local HTTP service with isolated files and a synthetic upstream', async (t
     assert.equal(result.data.providers[0].balance.value, 25);
     assert.equal(result.data.providers[0].updatedAt, first.data.providers[0].updatedAt);
     mode = 'normal';
+  });
+  await t.test('quota route maps configured relays without reading OpenCode credentials', async () => {
+    const result = await call('/quota', 'POST', {
+      v: 1,
+      requestId: 'quota-fixture',
+      method: 'usage.read',
+      provider: 'ext-balance',
+      input: { credentials: {} },
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.data.ok, true);
+    const card = result.data.data;
+    assert.equal(card.configured, true);
+    const key = Object.keys(card.usage.windows).find((name) => name.startsWith('Fixture · '));
+    assert.ok(key, 'relay window is present');
+    assert.equal(card.usage.windows[key].usedPercent, 75);
+    assert.equal(card.usage.windows[key].valueLabel, '75 / 100');
+    assert.equal(JSON.stringify(card).includes('fixture-only-key'), false);
+  });
+  await t.test('quota route rejects an unsupported wire call', async () => {
+    const result = await call('/quota', 'POST', {
+      v: 2,
+      requestId: 'quota-invalid',
+      method: 'usage.read',
+      provider: 'ext-balance',
+      input: { credentials: {} },
+    });
+    assert.equal(result.status, 400);
+    assert.equal(result.data.ok, false);
   });
   await t.test('blank keys survive edits, but cannot be forwarded to a different site', async () => {
     const result = await call('/relays', 'POST', { id, name: 'Renamed', baseUrl: base, apiKey: '' });

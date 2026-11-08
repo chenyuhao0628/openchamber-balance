@@ -12,6 +12,7 @@ English | [简体中文](#简体中文)
 - Used quota, remaining quota and reset time; amounts are right-aligned and currencies stay separate.
 - Relay management with a connection test before saving.
 - Custom balance APIs: fill in the request URL, auth header and JSON field paths to add a provider without changing code.
+- OpenChamber 2.7 quota provider: balances also appear in the Usage page, the header, Work Status and the desktop tray.
 - Cached results, merged concurrent refreshes and immediate cache invalidation after a relay change.
 - Light, dark and narrow layouts that follow the host theme.
 
@@ -33,7 +34,7 @@ In OpenChamber, open **Settings → Extensions → Add extension** and paste:
 https://github.com/chenyuhao0628/openchamber-balance
 ```
 
-Requires OpenChamber **1.24.0 or newer**; tested on 2.5.2. The extension runs a local service on `127.0.0.1` and checks the host Bearer token. Saved relay keys are never returned by the list or balance APIs.
+Requires OpenChamber **2.7.0 or newer**; tested on 2.7.0. The extension runs a local service on `127.0.0.1` and checks the host Bearer token. Saved relay keys are never returned by the list or balance APIs.
 
 > The panel and Work Status copy follow the host language (Simplified Chinese or English). The full Chinese documentation is below.
 
@@ -43,9 +44,11 @@ Requires OpenChamber **1.24.0 or newer**; tested on 2.5.2. The extension runs a 
 
 OpenChamber 余额扩展，在**工作状态分区**与右侧「**余额**」面板中汇总 AI 服务的余额、额度和重置时间。
 
-当前版本 **0.2.12**，本说明于 **2026-11-04** 对照源码和本机宿主核对。面板与工作状态文案跟随宿主语言在简体中文和英文间切换。清单声明宿主版本 `>=1.24.0`，SDK 依赖为 **2.5.2**；这些声明不等于已测试所有宿主版本。
+当前版本 **0.3.0**，本说明于 **2026-11-08** 对照源码和本机宿主核对。面板与工作状态文案跟随宿主语言在简体中文和英文间切换。清单要求 OpenChamber `>=2.7.0`，SDK 依赖为 **2.7.0**；这些声明不等于已测试所有宿主版本。
 
 ## 使用体验
+
+0.3.0 接入 OpenChamber 2.7.0 的 **quota 角色**：宿主在「用量」、标题栏、工作状态、手机和桌面托盘里绘制一张「余额」卡。内置 Command Code、StepFun 的凭据由宿主按清单授权后传入，`/quota` 不再直接读取 OpenCode 凭据库；完整面板仍保留 SQLite/旧 `auth.json` 回退。多个供应商会合并为单卡窗口。
 
 0.2.12 增加“自定义余额接口”：填写完整请求地址、GET/POST、认证请求头和 JSON 字段路径，即可接入内置列表之外的供应商。内置 Command Code、StepFun 改为服务内供应商注册表，仍只在 OpenCode 凭据存在时显示。
 
@@ -61,6 +64,7 @@ OpenChamber 余额扩展，在**工作状态分区**与右侧「**余额**」面
 - 「接口」独立管理连接，点击添加或编辑才出现表单，保存后返回总览。
 - 跟随 OpenChamber 的字体、色彩和控件风格，适配浅色、深色和窄侧栏。方向键可切换页签，Enter 可提交表单。
 - 工作状态分区正文与内置「用量」使用相同的行式布局、字号、行高和图标尺寸；标题行只能使用宿主提供的文字控件，无法复刻内置用量的“摘要 + 图标刷新”。刷新/管理位于标题行；管理入口复用完整余额侧栏。无项目会话可直接点击右侧「余额」图标；原版宿主 2.4.0 的工作状态「管理」入口仍无响应，该限制暂时保留，原因见[已知限制](#已知限制)。
+- 宿主「用量」中的「余额」卡：每个供应商的额度窗口与余额映射为卡片窗口；部分查询失败会显示状态窗口。该卡由宿主在页面打开时每 3 分钟刷新一次，与完整面板的手动刷新缓存相互独立。
 - 刷新失败时保留上次成功数据，并明确显示“上次余额”、错误原因和成功时间；未知余额显示 `—`。
 
 工作状态分区的结构、字体、图标、数据顺序和宿主 iframe 限制见[工作状态分区 UI 规范](STATUS-SECTION.md)。

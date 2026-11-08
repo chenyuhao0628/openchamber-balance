@@ -15,6 +15,7 @@ import { createBalanceCache, failedProvider } from './cache.ts';
 import type { Contribution } from './contribution.ts';
 import { asNumber, makeBalance, makeWindow, shortPlanLabel, toTimestamp, windowFromCounts } from './normalize.ts';
 import { parseCustomContribution, validateCustomRequest } from './custom.ts';
+import { buildQuotaUsage, quotaCredential, readQuotaRequest, type QuotaUsageData } from './quota.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
 const token = process.env.OPENCHAMBER_SERVICE_TOKEN ?? '';
@@ -482,8 +483,10 @@ const BUILTIN_PROVIDERS: BuiltinProvider[] = [
   { id: 'stepfun', name: 'StepFun', credentialIds: ['stepfun-step-plan', 'stepfun'], fetch: fetchStepfun },
 ];
 
-const buildBalances = async (previous: Provider[]): Promise<BalancesResult> => {
-  const credentials = await readCredentials();
+const buildProviders = async (
+  previous: Provider[],
+  credentials: Record<string, Credential>,
+): Promise<Provider[]> => {
   const relays = readConfig().relays;
 
   const jobs: Array<{ id: string; name: string; run: () => Promise<Contribution> }> = [
@@ -521,7 +524,43 @@ const buildBalances = async (previous: Provider[]): Promise<BalancesResult> => {
     }),
   );
 
-  return { fetchedAt: Date.now(), providers: providers.filter((provider) => provider !== null) };
+  return providers.filter((provider) => provider !== null);
+};
+
+const buildBalances = async (previous: Provider[]): Promise<BalancesResult> => {
+  const credentials = await readCredentials();
+  return { fetchedAt: Date.now(), providers: await buildProviders(previous, credentials) };
+};
+
+/**
+ * The Usage page calls this while it is open. It must use only the credentials
+ * OpenChamber approved for the providers listed in `contributes.quota`, not
+ * the service's own read of OpenCode's credential store.
+ */
+const buildQuotaData = async (raw: Record<string, unknown>): Promise<QuotaUsageData> => {
+  try {
+    const credentials: Record<string, Credential> = {};
+    for (const [id, value] of Object.entries(raw)) {
+      const credential = quotaCredential(value);
+      if (credential) credentials[id] = credential;
+    }
+    const relays = readConfig().relays;
+    const configured = relays.length > 0 || BUILTIN_PROVIDERS.some(
+      (provider) => firstCredential(credentials, provider.credentialIds) !== null,
+    );
+    if (!configured) {
+      return {
+        ok: false,
+        configured: true,
+        error: '在「余额」面板添加接口，或在 OpenChamber Providers 登录 Command Code/StepFun',
+        usage: null,
+      };
+    }
+    const providers = await buildProviders([], credentials);
+    return buildQuotaUsage({ providers, configured });
+  } catch (error) {
+    return { ok: false, configured: true, error: describeError(error), usage: null };
+  }
 };
 
 const balanceCache = createBalanceCache(buildBalances);
@@ -667,6 +706,14 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
     json(res, 200, { ok: true });
   } else if (url.pathname === '/balances' && req.method === 'GET') {
     json(res, 200, await balanceCache.get(url.searchParams.get('refresh') === '1'));
+  } else if (url.pathname === '/quota' && req.method === 'POST') {
+    const body = await readBody(req);
+    const request = readQuotaRequest(body);
+    if (!request) {
+      json(res, 400, { ok: false, error: { message: 'invalid quota request' } });
+      return;
+    }
+    json(res, 200, { ok: true, data: await buildQuotaData(request.credentials) });
   } else if (url.pathname === '/relays' && req.method === 'GET') {
     json(res, 200, { relays: readConfig().relays.map(publicRelay) });
   } else if (url.pathname === '/relays/test' && req.method === 'POST') {
