@@ -1,6 +1,6 @@
 {
   "name": "openchamber-balance",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "OpenChamber 余额与额度：清晰总览、中转站管理与可靠的手动刷新。",
@@ -44,8 +44,7 @@
     "watch": "node scripts/build.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.*",
-    "pretest": "npm run build",
-    "preview": "node scripts/preview.mjs"
+    "pretest": "npm run build"
   },
   "devDependencies": {
     "@openchamber/sdk": "2.7.0",
@@ -57,6 +56,5 @@
     "panel/",
     "service/",
     "README.md"
-  ],
-  "license": "MIT"
+  ]
 }

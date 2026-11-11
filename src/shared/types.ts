@@ -53,7 +53,12 @@ export type Relay = {
   name: string;
   /** Auto relays use a base URL; custom relays use the full request URL. */
   baseUrl: string;
+  /** Standalone stored API key, or empty string when reusing `providerId`. */
   apiKey: string;
+  /** Optional OpenCode provider ID whose credential is reused read-only. */
+  providerId?: string;
+  /** Defaults to true when omitted. */
+  enabled?: boolean;
   kind?: RelayKind;
   custom?: CustomRequest;
 };
@@ -62,8 +67,19 @@ export type PublicRelay = {
   name: string;
   baseUrl: string;
   hasKey: boolean;
+  providerId?: string;
+  enabled: boolean;
   kind: RelayKind;
   custom?: CustomRequest;
+};
+export type OpencodeProviderCandidate = {
+  id: string;
+  name: string;
+  /** Sanitized base URL from opencode.json(c) without credentials or query params, or null. */
+  baseUrl: string | null;
+  hasCredential: boolean;
+  /** True when declared in opencode.json(c) with a baseURL and not a built-in native quota provider. */
+  isCustomConfig: boolean;
 };
 
 export const EMPTY_CUSTOM_MAPPING: CustomMapping = {

@@ -13,8 +13,14 @@ import type { BalancesResult, CustomRequest, Provider, Relay, UsageWindow } from
 import { changesEndpointOrigin, changesRelayOrigin, normalizeEndpointUrl, normalizeRelayUrl } from '../shared/relay-url.ts';
 import { createBalanceCache, failedProvider } from './cache.ts';
 import type { Contribution } from './contribution.ts';
-import { asNumber, makeBalance, makeWindow, shortPlanLabel, toTimestamp, windowFromCounts } from './normalize.ts';
-import { parseCustomContribution, validateCustomRequest } from './custom.ts';
+import { asNumber, makeBalance, makeWindow, shortPlanLabel, windowFromCounts } from './normalize.ts';
+import { hasAnyCustomMapping, parseCustomContribution, validateCustomRequest } from './custom.ts';
+import {
+  VALID_PROVIDER_ID,
+  listOpencodeProviderCandidates,
+  readOpencodeProviderConfigs,
+  resolveOpencodeConfigDir,
+} from './opencode-config.ts';
 import { buildQuotaUsage, quotaCredential, readQuotaRequest, type QuotaUsageData } from './quota.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
@@ -51,12 +57,11 @@ const projectCredential = (raw: unknown): Credential | null => {
   }
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
-  if (record.type === 'key' && typeof record.key === 'string') return { key: record.key, kind: 'api' };
-  if (record.type === 'oauth' && typeof record.access === 'string') return { key: record.access, kind: 'oauth' };
-  // Legacy auth.json shape: { type: 'api', key } already handled by the two
-  // branches above; some entries store { type: 'oauth', access, refresh }.
-  if (typeof record.key === 'string') return { key: record.key, kind: 'api' };
-  if (typeof record.access === 'string') return { key: record.access, kind: 'oauth' };
+  if (record.type === 'key' && typeof record.key === 'string' && record.key) return { key: record.key, kind: 'api' };
+  if (record.type === 'oauth' && typeof record.access === 'string' && record.access) return { key: record.access, kind: 'oauth' };
+  // Legacy auth.json shape: { type: 'api', key } or { type: 'oauth', access, refresh }.
+  if (typeof record.key === 'string' && record.key) return { key: record.key, kind: 'api' };
+  if (typeof record.access === 'string' && record.access) return { key: record.access, kind: 'oauth' };
   return null;
 };
 
@@ -72,7 +77,7 @@ const loadDatabaseSync = (): Promise<unknown> => {
   return databaseSyncPromise;
 };
 
-const readCredentials = async (): Promise<Record<string, Credential>> => {
+const readStoreCredentials = async (): Promise<Record<string, Credential>> => {
   const result: Record<string, Credential> = {};
   const DatabaseSync = (await loadDatabaseSync()) as
     | (new (file: string, options: { readOnly: boolean }) => {
@@ -118,6 +123,23 @@ const readCredentials = async (): Promise<Record<string, Credential>> => {
     }
   } catch {
     // no legacy file either; provider simply shows as not configured
+  }
+  return result;
+};
+
+/**
+ * Read-only merge of OpenCode's credential store (`opencode.db` / `auth.json`)
+ * plus any literal `apiKey` in `opencode.json(c)` provider entries.
+ * Used ONLY by `/balances`, `/relays/test`, and sanitized `/opencode-providers` —
+ * NEVER by `/quota`.
+ */
+const readCredentials = async (): Promise<Record<string, Credential>> => {
+  const result = await readStoreCredentials();
+  const configs = readOpencodeProviderConfigs(resolveOpencodeConfigDir(HOME));
+  for (const [id, cfg] of configs.entries()) {
+    if (!(id in result) && cfg.inlineApiKey) {
+      result[id] = { key: cfg.inlineApiKey, kind: 'api' };
+    }
   }
   return result;
 };
@@ -177,20 +199,33 @@ const parseStoredRelay = (value: unknown): Relay => {
     typeof record.baseUrl !== 'string' ||
     typeof record.apiKey !== 'string'
   ) throw new Error();
+  const providerId = record.providerId === undefined || record.providerId === ''
+    ? undefined
+    : (typeof record.providerId === 'string' && VALID_PROVIDER_ID.test(record.providerId) ? record.providerId : (() => { throw new Error(); })());
+  const enabled = record.enabled === undefined ? true : Boolean(record.enabled);
   const kind = record.kind === 'custom' ? 'custom' : 'auto';
-  if (kind === 'auto') return { id: record.id, name: record.name, baseUrl: record.baseUrl, apiKey: record.apiKey, kind };
-  return {
+  const base: Relay = {
     id: record.id,
     name: record.name,
     baseUrl: record.baseUrl,
     apiKey: record.apiKey,
+    ...(providerId ? { providerId } : {}),
+    enabled,
     kind,
+  };
+  if (kind === 'auto') return base;
+  return {
+    ...base,
     custom: parseStoredCustom(record.custom),
   };
 };
 
 class RequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
+}
+
+class CustomMappingTestError extends Error {
+  constructor(message: string, readonly raw: unknown) { super(message); }
 }
 
 const readConfig = (): { relays: Relay[] } => {
@@ -288,8 +323,6 @@ const fetchCommandCode = async (credential: Credential | null): Promise<Contribu
       }
     | null;
 
-  // Optional: billing period end + spend for the monthly window. Both are
-  // best-effort; without them the monthly row is omitted rather than invented.
   const subscriptionData = subscriptions?.ok
     ? ((subscriptions.body as { data?: Record<string, unknown> } | null)?.data ?? null)
     : null;
@@ -306,8 +339,6 @@ const fetchCommandCode = async (credential: Credential | null): Promise<Contribu
   if (fiveHour) windows.push(fiveHour);
   if (weekly) windows.push(weekly);
 
-  // The alpha API never states the monthly allowance: it reports what is left
-  // this period and what the period has spent. Their sum is the effective cap.
   if (periodSpent !== null && monthlyCredits !== null && periodSpent >= 0 && monthlyCredits >= 0) {
     const cap = periodSpent + monthlyCredits;
     if (cap > 0) {
@@ -379,9 +410,10 @@ const parseDashboardBilling = (subscription: Record<string, unknown>, usage: Rec
   return { plan: '按量付费', balance: makeBalance(used === null ? null : limit - used, 'USD'), windows, detail: used === null ? '接口未提供已用量，暂无法计算剩余余额' : null };
 };
 
-const fetchRelay = async (relay: Relay): Promise<Contribution> => {
+const fetchRelay = async (relay: Relay, apiKey: string): Promise<Contribution> => {
   const base = normalizeRelayUrl(relay.baseUrl);
   const deadline = AbortSignal.timeout(12_000);
+  const headers = { Accept: 'application/json', Authorization: `Bearer ${apiKey}` };
   const query = async (url: string): Promise<JsonAnswer> => {
     try { return await fetchJson(url, headers, deadline); }
     catch (error) {
@@ -389,7 +421,6 @@ const fetchRelay = async (relay: Relay): Promise<Contribution> => {
       return { ok: false, status: 0, body: null };
     }
   };
-  const headers = { Accept: 'application/json', Authorization: `Bearer ${relay.apiKey}` };
 
   const usage = await query(`${base}/v1/usage`);
   if (usage.ok && usage.body && typeof usage.body === 'object') {
@@ -424,7 +455,13 @@ const fetchRelay = async (relay: Relay): Promise<Contribution> => {
     }
   }
 
-  throw new Error([usage.status, subscription.status, newApi.status].includes(401) ? '认证失败，请检查 API Key 是否有效' : [usage.status, subscription.status, newApi.status].includes(403) ? '当前 Key 没有查询余额的权限' : '无法识别余额接口，请检查服务地址及站点是否支持余额查询');
+  throw new Error(
+    [usage.status, subscription.status, newApi.status].includes(401)
+      ? '认证失败，请检查 API Key 是否有效'
+      : [usage.status, subscription.status, newApi.status].includes(403)
+        ? '当前 Key 没有查询余额的权限（部分中转站推理密钥与账单查询令牌分离，可在编辑中单独填写查询密钥）'
+        : '无法识别余额接口，请检查服务地址及站点是否支持余额查询',
+  );
 };
 
 const parseHeaderLines = (raw: string): Record<string, string> => {
@@ -444,13 +481,33 @@ const parseHeaderLines = (raw: string): Record<string, string> => {
   return headers;
 };
 
-const fetchCustom = async (relay: Relay): Promise<Contribution & { raw?: unknown }> => {
+const redact = (text: string, secret: string): string => (
+  secret ? text.split(secret).join('{key}') : text
+);
+
+const sanitizeRawBody = (raw: unknown, secret: string): unknown => {
+  if (!secret || raw == null || typeof raw !== 'object') return raw;
+  try {
+    return JSON.parse(redact(JSON.stringify(raw), secret));
+  } catch {
+    return undefined;
+  }
+};
+
+const fetchCustom = async (
+  relay: Relay,
+  apiKey: string,
+  options: { testMode?: boolean } = {},
+): Promise<Contribution & { raw?: unknown }> => {
   const custom = relay.custom;
   if (!custom) throw new Error('自定义接口缺少请求配置');
-  validateCustomRequest(custom);
+  validateCustomRequest(custom, { allowEmptyMapping: options.testMode === true });
+  if (apiKey && (custom.headers.includes(apiKey) || custom.body.includes(apiKey))) {
+    throw new Error('不要把 API Key 写进额外请求头或请求体');
+  }
   const headers: Record<string, string> = { Accept: 'application/json', ...parseHeaderLines(custom.headers) };
   const authHeader = custom.authHeader.trim();
-  if (authHeader) headers[authHeader] = custom.authScheme === 'bearer' ? `Bearer ${relay.apiKey}` : relay.apiKey;
+  if (authHeader && apiKey) headers[authHeader] = custom.authScheme === 'bearer' ? `Bearer ${apiKey}` : apiKey;
   if (custom.method === 'POST' && custom.body.trim() && !Object.keys(headers).some((name) => name.toLowerCase() === 'content-type')) {
     headers['Content-Type'] = 'application/json';
   }
@@ -459,12 +516,47 @@ const fetchCustom = async (relay: Relay): Promise<Contribution & { raw?: unknown
     body: custom.method === 'POST' && custom.body.trim() ? custom.body : undefined,
   });
   if (!answer.ok) throw new Error(`自定义接口返回 HTTP ${answer.status}`);
-  return { ...parseCustomContribution(answer.body, custom.mapping), raw: answer.body };
+  const safeRaw = sanitizeRawBody(answer.body, apiKey);
+  if (options.testMode && !hasAnyCustomMapping(custom.mapping)) {
+    throw new CustomMappingTestError('已获取接口响应，请在下方点选字段或填写 JSON 路径后保存', safeRaw);
+  }
+  try {
+    return { ...parseCustomContribution(answer.body, custom.mapping), raw: safeRaw };
+  } catch (error) {
+    if (options.testMode && safeRaw && typeof safeRaw === 'object') {
+      throw new CustomMappingTestError(describeError(error), safeRaw);
+    }
+    throw error;
+  }
 };
 
-const fetchConnection = (relay: Relay): Promise<Contribution & { raw?: unknown }> => (
-  relay.kind === 'custom' ? fetchCustom(relay) : fetchRelay(relay)
-);
+const resolveRelayApiKey = (
+  relay: Relay,
+  credentials: Record<string, Credential>,
+  options: { quotaMode?: boolean } = {},
+): string | null => {
+  if (relay.apiKey) return relay.apiKey;
+  if (relay.providerId) {
+    const found = credentials[relay.providerId];
+    if (found?.key) return found.key;
+    if (options.quotaMode) return null;
+    throw new Error(`未在供应商页面找到“${relay.providerId}”的密钥，请先在 OpenChamber 供应商页面配置或改用单独密钥`);
+  }
+  if (options.quotaMode) return null;
+  throw new Error('请填写 API Key');
+};
+
+const fetchConnection = async (
+  relay: Relay,
+  credentials: Record<string, Credential>,
+  options: { quotaMode?: boolean; testMode?: boolean } = {},
+): Promise<Contribution & { raw?: unknown }> => {
+  const apiKey = resolveRelayApiKey(relay, credentials, options);
+  if (apiKey === null) return { configured: false };
+  return relay.kind === 'custom'
+    ? fetchCustom(relay, apiKey, { testMode: options.testMode })
+    : fetchRelay(relay, apiKey);
+};
 
 // ---------------------------------------------------------------------------
 // Assembly
@@ -486,8 +578,9 @@ const BUILTIN_PROVIDERS: BuiltinProvider[] = [
 const buildProviders = async (
   previous: Provider[],
   credentials: Record<string, Credential>,
+  options: { quotaMode?: boolean } = {},
 ): Promise<Provider[]> => {
-  const relays = readConfig().relays;
+  const relays = readConfig().relays.filter((relay) => relay.enabled !== false);
 
   const jobs: Array<{ id: string; name: string; run: () => Promise<Contribution> }> = [
     ...BUILTIN_PROVIDERS.map((provider) => ({
@@ -498,7 +591,7 @@ const buildProviders = async (
     ...relays.map((relay) => ({
       id: `relay:${relay.id}`,
       name: relay.name,
-      run: () => fetchConnection(relay),
+      run: () => fetchConnection(relay, credentials, { quotaMode: options.quotaMode }),
     })),
   ];
 
@@ -544,19 +637,24 @@ const buildQuotaData = async (raw: Record<string, unknown>): Promise<QuotaUsageD
       const credential = quotaCredential(value);
       if (credential) credentials[id] = credential;
     }
-    const relays = readConfig().relays;
-    const configured = relays.length > 0 || BUILTIN_PROVIDERS.some(
+    const activeRelays = readConfig().relays.filter((relay) => relay.enabled !== false);
+    const quotaRelays = activeRelays.filter(
+      (relay) => relay.apiKey.length > 0 || Boolean(relay.providerId && credentials[relay.providerId]?.key),
+    );
+    const configured = quotaRelays.length > 0 || BUILTIN_PROVIDERS.some(
       (provider) => firstCredential(credentials, provider.credentialIds) !== null,
     );
     if (!configured) {
       return {
         ok: false,
         configured: true,
-        error: '在「余额」面板添加接口，或在 OpenChamber Providers 登录 Command Code/StepFun',
+        error: activeRelays.some((relay) => Boolean(relay.providerId))
+          ? '复用供应商密钥的接口已在「余额」侧栏与工作状态中生效'
+          : '在「余额」面板添加接口，或在 OpenChamber Providers 登录 Command Code/StepFun',
         usage: null,
       };
     }
-    const providers = await buildProviders([], credentials);
+    const providers = await buildProviders([], credentials, { quotaMode: true });
     return buildQuotaUsage({ providers, configured });
   } catch (error) {
     return { ok: false, configured: true, error: describeError(error), usage: null };
@@ -565,11 +663,11 @@ const buildQuotaData = async (raw: Record<string, unknown>): Promise<QuotaUsageD
 
 const balanceCache = createBalanceCache(buildBalances);
 
-const describeError = (error: unknown): string => {
+function describeError(error: unknown): string {
   if (error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name)) return '查询超时，请稍后刷新';
   if (error instanceof TypeError) return '无法连接服务，请检查网络或服务地址';
   return error instanceof Error ? error.message : '查询失败，请稍后重试';
-};
+}
 
 // ---------------------------------------------------------------------------
 // HTTP
@@ -605,14 +703,13 @@ const readBody = (req: http.IncomingMessage): Promise<Record<string, unknown>> =
     });
   });
 
-const redact = (text: string, secret: string): string => (
-  secret ? text.split(secret).join('{key}') : text
-);
 const publicRelay = (relay: Relay) => ({
   id: relay.id,
   name: relay.name,
   baseUrl: relay.baseUrl,
   hasKey: relay.apiKey.length > 0,
+  ...(relay.providerId ? { providerId: relay.providerId } : {}),
+  enabled: relay.enabled !== false,
   kind: relay.kind ?? 'auto',
   ...(relay.kind === 'custom' && relay.custom ? {
     custom: {
@@ -622,11 +719,13 @@ const publicRelay = (relay: Relay) => ({
     },
   } : {}),
 });
+
 const field = (body: Record<string, unknown>, key: string, max: number): string => {
   const value = typeof body[key] === 'string' ? body[key].trim() : '';
   if (value.length > max) throw new RequestError(400, `${key} 长度超出限制`);
   return value;
 };
+
 const nestedText = (record: Record<string, unknown>, key: string, max: number, fallback = ''): string => {
   const value = record[key];
   if (value === undefined) return fallback;
@@ -634,7 +733,12 @@ const nestedText = (record: Record<string, unknown>, key: string, max: number, f
   if (value.length > max) throw new RequestError(400, `${key} 长度超出限制`);
   return value;
 };
-const customRequest = (body: Record<string, unknown>, apiKey: string): CustomRequest => {
+
+const customRequest = (
+  body: Record<string, unknown>,
+  apiKey: string,
+  options: { allowEmptyMapping?: boolean } = {},
+): CustomRequest => {
   const raw = body.custom;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new RequestError(400, '缺少自定义接口配置');
   const record = raw as Record<string, unknown>;
@@ -659,14 +763,19 @@ const customRequest = (body: Record<string, unknown>, apiKey: string): CustomReq
       windowLabel: nestedText(mapping, 'windowLabel', 40, '额度').trim() || '额度',
     },
   };
-  try { validateCustomRequest(request); }
+  try { validateCustomRequest(request, options); }
   catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '自定义接口配置不正确'); }
   if (apiKey && (request.headers.includes(apiKey) || request.body.includes(apiKey))) {
     throw new RequestError(400, '不要把 API Key 写进额外请求头或请求体');
   }
   return request;
 };
-const resolveRelay = (body: Record<string, unknown>, config: { relays: Relay[] }): Relay => {
+
+const resolveRelay = (
+  body: Record<string, unknown>,
+  config: { relays: Relay[] },
+  options: { forTest?: boolean } = {},
+): Relay => {
   const id = field(body, 'id', 128);
   const stored = id ? config.relays.find((relay) => relay.id === id) : undefined;
   if (id && !stored) throw new RequestError(404, '此接口已移除，请重新打开管理页面');
@@ -677,23 +786,43 @@ const resolveRelay = (body: Record<string, unknown>, config: { relays: Relay[] }
       ? normalizeEndpointUrl(field(body, 'baseUrl', 4096))
       : normalizeRelayUrl(field(body, 'baseUrl', 2048));
   } catch (error) { throw new RequestError(400, describeError(error)); }
-  const typedKey = field(body, 'apiKey', 4096);
-  const originChanged = stored
-    ? (stored.kind === 'custom' || kind === 'custom'
-      ? changesEndpointOrigin(stored.baseUrl, baseUrl)
-      : changesRelayOrigin(stored.baseUrl, baseUrl))
-    : false;
-  if (!typedKey && stored && originChanged) {
-    throw new RequestError(400, '更换接口地址时，请重新填写 API Key');
+
+  const rawProviderId = field(body, 'providerId', 120);
+  if (rawProviderId && !VALID_PROVIDER_ID.test(rawProviderId)) {
+    throw new RequestError(400, '供应商标识格式不正确');
   }
-  const apiKey = typedKey || stored?.apiKey || '';
-  if (!apiKey) throw new RequestError(400, '请填写 API Key');
-  const custom = kind === 'custom' ? customRequest(body, apiKey) : undefined;
+
+  let apiKey = '';
+  let providerId: string | undefined;
+  if (rawProviderId) {
+    providerId = rawProviderId;
+    apiKey = '';
+  } else {
+    const typedKey = field(body, 'apiKey', 4096);
+    const originChanged = stored
+      ? (stored.kind === 'custom' || kind === 'custom'
+        ? changesEndpointOrigin(stored.baseUrl, baseUrl)
+        : changesRelayOrigin(stored.baseUrl, baseUrl))
+      : false;
+    if (!typedKey && stored?.apiKey && originChanged) {
+      throw new RequestError(400, '更换接口地址时，请重新填写 API Key');
+    }
+    apiKey = typedKey || stored?.apiKey || '';
+    if (!apiKey) throw new RequestError(400, '请填写 API Key');
+  }
+
+  const enabled = typeof body.enabled === 'boolean' ? body.enabled : (stored?.enabled ?? true);
+  const custom = kind === 'custom'
+    ? customRequest(body, apiKey, { allowEmptyMapping: options.forTest === true })
+    : undefined;
+
   return {
     id: stored?.id ?? randomUUID(),
     name: field(body, 'name', 60),
     baseUrl,
     apiKey,
+    ...(providerId ? { providerId } : {}),
+    enabled,
     kind,
     ...(custom ? { custom } : {}),
   };
@@ -706,6 +835,14 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
     json(res, 200, { ok: true });
   } else if (url.pathname === '/balances' && req.method === 'GET') {
     json(res, 200, await balanceCache.get(url.searchParams.get('refresh') === '1'));
+  } else if (url.pathname === '/opencode-providers' && req.method === 'GET') {
+    const [storeCredentials, configs] = await Promise.all([
+      readStoreCredentials(),
+      Promise.resolve(readOpencodeProviderConfigs(resolveOpencodeConfigDir(HOME))),
+    ]);
+    json(res, 200, {
+      providers: listOpencodeProviderCandidates(configs, Object.keys(storeCredentials)),
+    });
   } else if (url.pathname === '/quota' && req.method === 'POST') {
     const body = await readBody(req);
     const request = readQuotaRequest(body);
@@ -718,18 +855,41 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
     json(res, 200, { relays: readConfig().relays.map(publicRelay) });
   } else if (url.pathname === '/relays/test' && req.method === 'POST') {
     const body = await readBody(req);
-    const relay = resolveRelay(body, readConfig());
+    const relay = resolveRelay(body, readConfig(), { forTest: true });
     try {
-      const contribution = await fetchConnection(relay);
+      const credentials = relay.providerId ? await readCredentials() : {};
+      const contribution = await fetchConnection(relay, credentials, { testMode: true });
       json(res, 200, { ok: true, baseUrl: relay.baseUrl, ...contribution });
     } catch (error) {
-      json(res, 200, { ok: false, error: describeError(error) });
+      if (error instanceof CustomMappingTestError) {
+        json(res, 200, { ok: false, error: error.message, raw: error.raw });
+      } else {
+        json(res, 200, { ok: false, error: describeError(error) });
+      }
     }
+  } else if (url.pathname === '/relays/toggle' && req.method === 'POST') {
+    const body = await readBody(req);
+    const id = field(body, 'id', 128);
+    if (!id) throw new RequestError(400, '缺少接口编号');
+    const config = readConfig();
+    const target = config.relays.find((relay) => relay.id === id);
+    if (!target) throw new RequestError(404, '此接口已移除，请重新打开管理页面');
+    target.enabled = Boolean(body.enabled);
+    writeConfig(config);
+    balanceCache.invalidate(`relay:${id}`);
+    json(res, 200, { relays: config.relays.map(publicRelay) });
   } else if (url.pathname === '/relays' && req.method === 'POST') {
     const body = await readBody(req);
     const config = readConfig();
     const relay = resolveRelay(body, config);
     if (!relay.name) throw new RequestError(400, '请填写接口名称');
+    if (relay.providerId && relay.kind === 'custom' && relay.custom) {
+      const credentials = await readCredentials();
+      const resolvedKey = credentials[relay.providerId]?.key ?? '';
+      if (resolvedKey && (relay.custom.headers.includes(resolvedKey) || relay.custom.body.includes(resolvedKey))) {
+        throw new RequestError(400, '不要把 API Key 写进额外请求头或请求体');
+      }
+    }
     const index = config.relays.findIndex((item) => item.id === relay.id);
     if (index >= 0) config.relays[index] = relay;
     else config.relays.push(relay);

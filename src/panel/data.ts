@@ -1,4 +1,11 @@
-import { EMPTY_CUSTOM_MAPPING, type CustomRequest, type Provider, type PublicRelay as Relay, type UsageWindow } from '../shared/types.ts';
+import {
+  EMPTY_CUSTOM_MAPPING,
+  type CustomRequest,
+  type OpencodeProviderCandidate,
+  type Provider,
+  type PublicRelay as Relay,
+  type UsageWindow,
+} from '../shared/types.ts';
 
 export const asNumber = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 
@@ -75,12 +82,28 @@ export const parseRelay = (value: unknown): Relay | null => {
   const kind = record.kind === 'custom' ? 'custom' : 'auto';
   const custom = kind === 'custom' ? parseCustomRequest(record.custom) : undefined;
   if (kind === 'custom' && !custom) return null;
+  const providerId = typeof record.providerId === 'string' && record.providerId.trim() ? record.providerId.trim() : undefined;
   return {
     id: record.id,
     name: record.name,
     baseUrl: record.baseUrl,
     hasKey: record.hasKey === true,
+    ...(providerId ? { providerId } : {}),
+    enabled: record.enabled !== false,
     kind,
     ...(custom ? { custom } : {}),
+  };
+};
+
+export const parseOpencodeProvider = (value: unknown): OpencodeProviderCandidate | null => {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== 'string' || !record.id || typeof record.name !== 'string' || !record.name) return null;
+  return {
+    id: record.id,
+    name: record.name,
+    baseUrl: typeof record.baseUrl === 'string' && record.baseUrl ? record.baseUrl : null,
+    hasCredential: record.hasCredential === true,
+    isCustomConfig: record.isCustomConfig === true,
   };
 };

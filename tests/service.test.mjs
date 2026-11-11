@@ -224,4 +224,112 @@ test('local HTTP service with isolated files and a synthetic upstream', async (t
     assert.deepEqual((await call('/balances')).data.providers, []);
     assert.equal(logs.includes('fixture-only-key'), false);
   });
+  await t.test('discovers OpenCode custom providers, reuses provider credentials without duplicating keys, toggles enabled state, and returns raw JSON on unmapped custom test', async () => {
+    const opencodeCfgDir = path.join(fixture, '.config/opencode');
+    const opencodeDataDir = path.join(fixture, '.local/share/opencode');
+    await mkdir(opencodeCfgDir, { recursive: true });
+    await mkdir(opencodeDataDir, { recursive: true });
+    await writeFile(path.join(opencodeCfgDir, 'opencode.jsonc'), `{
+      // Synthetic custom provider configured on OpenChamber Providers page
+      "providers": {
+        "synthetic-relay": {
+          "name": "合成中转站",
+          "settings": { "baseURL": "${base}/v1/" },
+        },
+      },
+    }`);
+    await writeFile(path.join(opencodeDataDir, 'auth.json'), JSON.stringify({
+      'synthetic-relay': { type: 'api', key: 'provider-reused-secret' },
+    }));
+
+    const discovered = await call('/opencode-providers');
+    assert.equal(discovered.status, 200);
+    assert.equal(JSON.stringify(discovered.data).includes('provider-reused-secret'), false);
+    const candidate = discovered.data.providers.find(item => item.id === 'synthetic-relay');
+    assert.deepEqual(candidate, {
+      id: 'synthetic-relay',
+      name: '合成中转站',
+      baseUrl: base,
+      hasCredential: true,
+      isCustomConfig: true,
+    });
+
+    // Save relay bound to providerId with empty apiKey — secret never written to config.json!
+    const saved = await call('/relays', 'POST', {
+      name: '合成中转站',
+      baseUrl: base + '/v1',
+      apiKey: '',
+      providerId: 'synthetic-relay',
+      kind: 'auto',
+    });
+    assert.equal(saved.status, 200);
+    const reusedRelay = saved.data.relays[0];
+    assert.equal(reusedRelay.providerId, 'synthetic-relay');
+    assert.equal(reusedRelay.hasKey, false);
+    assert.equal(reusedRelay.enabled, true);
+    const persistedDoc = JSON.parse(await readFile(configFile, 'utf8'));
+    assert.equal(persistedDoc.relays[0].apiKey, '');
+    assert.equal(JSON.stringify(persistedDoc).includes('provider-reused-secret'), false);
+
+    // Balances endpoint resolves the provider's credential read-only at runtime.
+    const balances = await call('/balances?refresh=1');
+    assert.equal(balances.data.providers[0].ok, true);
+    assert.equal(balances.data.providers[0].balance.value, 25);
+    assert.equal(JSON.stringify(balances.data).includes('provider-reused-secret'), false);
+
+    // Quota endpoint strictly honors host-provided credentials only and never reads auth.json on its own.
+    const quota = await call('/quota', 'POST', {
+      v: 1,
+      requestId: 'quota-reused-isolated',
+      method: 'usage.read',
+      provider: 'ext-balance',
+      input: { credentials: {} },
+    });
+    assert.equal(quota.status, 200);
+    assert.equal(quota.data.data.usage, null);
+    assert.match(quota.data.data.error, /余额/);
+
+    // Toggle enabled=false pauses balance queries without deleting configuration.
+    const toggledOff = await call('/relays/toggle', 'POST', { id: reusedRelay.id, enabled: false });
+    assert.equal(toggledOff.status, 200);
+    assert.equal(toggledOff.data.relays[0].enabled, false);
+    assert.deepEqual((await call('/balances')).data.providers, []);
+
+    const toggledOn = await call('/relays/toggle', 'POST', { id: reusedRelay.id, enabled: true });
+    assert.equal(toggledOn.data.relays[0].enabled, true);
+    assert.equal((await call('/balances')).data.providers.length, 1);
+
+    // Custom test with empty mapping returns raw JSON so the interactive path picker can populate fields.
+    const unmappedTest = await call('/relays/test', 'POST', {
+      name: '探测接口',
+      baseUrl: base + '/custom/balance',
+      apiKey: '',
+      providerId: 'synthetic-relay',
+      kind: 'custom',
+      custom: {
+        method: 'GET',
+        authHeader: 'Authorization',
+        authScheme: 'bearer',
+        headers: '',
+        body: '',
+        mapping: {
+          balancePath: '',
+          unit: 'USD',
+          usedPath: '',
+          limitPath: '',
+          usedPercentPath: '',
+          resetAtPath: '',
+          planPath: '',
+          detailPath: '',
+          windowLabel: '额度',
+        },
+      },
+    });
+    assert.equal(unmappedTest.status, 200);
+    assert.equal(unmappedTest.data.ok, false);
+    assert.equal(unmappedTest.data.raw.data.balance, 42.5);
+
+    await call('/relays?id=' + reusedRelay.id, 'DELETE');
+    assert.equal(logs.includes('provider-reused-secret'), false);
+  });
 });

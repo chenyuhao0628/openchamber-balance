@@ -1,8 +1,8 @@
 // src/service/main.ts
 import http from "node:http";
-import fs from "node:fs";
+import fs2 from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import path2 from "node:path";
 import { randomUUID } from "node:crypto";
 
 // src/shared/relay-url.ts
@@ -157,14 +157,14 @@ var shortPlanLabel = (plan) => {
 var makeBalance = (value, unit) => value === null ? null : { value, label: moneyLabel(value, unit), unit };
 
 // src/service/custom.ts
-var pathTokens = (path2) => {
-  const cleaned = path2.trim().replace(/^\$\.?/, "");
+var pathTokens = (path3) => {
+  const cleaned = path3.trim().replace(/^\$\.?/, "");
   if (!cleaned) return [];
   return cleaned.replace(/\[(\d+)\]/g, ".$1").split(".").filter((token2) => token2.length > 0);
 };
-var readPath = (value, path2) => {
+var readPath = (value, path3) => {
   let current = value;
-  for (const token2 of pathTokens(path2)) {
+  for (const token2 of pathTokens(path3)) {
     if (token2 === "__proto__" || token2 === "prototype" || token2 === "constructor") return void 0;
     if (Array.isArray(current)) {
       const index = Number(token2);
@@ -178,23 +178,26 @@ var readPath = (value, path2) => {
   }
   return current;
 };
-var textAt = (value, path2) => {
-  if (!path2.trim()) return null;
-  const found = readPath(value, path2);
+var textAt = (value, path3) => {
+  if (!path3.trim()) return null;
+  const found = readPath(value, path3);
   return typeof found === "string" && found.trim() ? found.trim() : null;
 };
-var numberAt = (value, path2) => {
-  if (!path2.trim()) return null;
-  return asNumber(readPath(value, path2));
+var numberAt = (value, path3) => {
+  if (!path3.trim()) return null;
+  return asNumber(readPath(value, path3));
 };
-var validateCustomRequest = (request) => {
+var hasAnyCustomMapping = (mapping) => Boolean(
+  mapping.balancePath.trim() || mapping.usedPath.trim() || mapping.limitPath.trim() || mapping.usedPercentPath.trim()
+);
+var validateCustomRequest = (request, options = {}) => {
   if (request.method !== "GET" && request.method !== "POST") throw new Error("\u8BF7\u6C42\u65B9\u5F0F\u5FC5\u987B\u662F GET \u6216 POST");
   if (request.authHeader.trim().length > 100) throw new Error("\u8BA4\u8BC1\u8BF7\u6C42\u5934\u540D\u79F0\u8FC7\u957F");
   if (request.headers.length > 8e3) throw new Error("\u989D\u5916\u8BF7\u6C42\u5934\u8FC7\u957F");
   if (request.body.length > 16e3) throw new Error("\u8BF7\u6C42\u4F53\u8FC7\u957F");
   if (request.method === "GET" && request.body.trim()) throw new Error("GET \u8BF7\u6C42\u4E0D\u80FD\u5305\u542B\u8BF7\u6C42\u4F53\u3002");
   const { mapping } = request;
-  if (!mapping.balancePath.trim() && !mapping.usedPath.trim() && !mapping.limitPath.trim() && !mapping.usedPercentPath.trim()) {
+  if (!options.allowEmptyMapping && !hasAnyCustomMapping(mapping)) {
     throw new Error("\u8BF7\u81F3\u5C11\u586B\u5199\u4F59\u989D\u5B57\u6BB5\u6216\u989D\u5EA6\u5B57\u6BB5\u3002");
   }
   if (mapping.balancePath.length > 300 || mapping.usedPath.length > 300 || mapping.limitPath.length > 300 || mapping.usedPercentPath.length > 300 || mapping.resetAtPath.length > 300 || mapping.planPath.length > 300 || mapping.detailPath.length > 300) {
@@ -211,8 +214,8 @@ var parseCustomContribution = (body, mapping) => {
   const detail = textAt(body, mapping.detailPath);
   const windows = [];
   let usedPercent = numberAt(body, mapping.usedPercentPath);
-  let used = numberAt(body, mapping.usedPath);
-  let limit = numberAt(body, mapping.limitPath);
+  const used = numberAt(body, mapping.usedPath);
+  const limit = numberAt(body, mapping.limitPath);
   if (usedPercent === null && used !== null && limit !== null && limit > 0) usedPercent = used / limit * 100;
   if (usedPercent !== null) {
     const resetAt = mapping.resetAtPath.trim() ? readPath(body, mapping.resetAtPath) : null;
@@ -230,20 +233,220 @@ var parseCustomContribution = (body, mapping) => {
   };
 };
 
+// src/service/opencode-config.ts
+import fs from "node:fs";
+import path from "node:path";
+var NATIVE_USAGE_PROVIDER_IDS = /* @__PURE__ */ new Set([
+  "anthropic",
+  "claude",
+  "openai",
+  "codex",
+  "cursor",
+  "deepseek",
+  "deepinfra",
+  "google",
+  "gemini",
+  "antigravity",
+  "kimi-for-coding",
+  "moonshotai",
+  "openrouter",
+  "zai-coding-plan",
+  "zhipuai-coding-plan",
+  "minimax-coding-plan",
+  "minimax-cn-coding-plan",
+  "github-copilot",
+  "nano-gpt",
+  "ollama-cloud",
+  "opencode",
+  "opencode-go",
+  "xai",
+  "zenmux",
+  "kilo",
+  "neuralwatt",
+  "wafer",
+  "exe-dev",
+  "hyper",
+  "cline-pass",
+  "command-code",
+  "commandcode",
+  "stepfun-step-plan",
+  "stepfun"
+]);
+var VALID_PROVIDER_ID = /^[a-zA-Z0-9._:@/-]{1,120}$/;
+var stripJsonc = (input) => {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  let index = 0;
+  while (index < input.length) {
+    const ch = input[index];
+    const next = input[index + 1];
+    if (inString) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      index += 1;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      index += 1;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      index += 2;
+      while (index < input.length && input[index] !== "\n") index += 1;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      index += 2;
+      while (index < input.length && !(input[index] === "*" && input[index + 1] === "/")) {
+        if (input[index] === "\n") out += "\n";
+        index += 1;
+      }
+      index += 2;
+      continue;
+    }
+    out += ch;
+    index += 1;
+  }
+  let cleaned = "";
+  inString = false;
+  escaped = false;
+  for (let i = 0; i < out.length; i += 1) {
+    const ch = out[i];
+    if (inString) {
+      cleaned += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      cleaned += ch;
+      continue;
+    }
+    if (ch === ",") {
+      let lookahead = i + 1;
+      while (lookahead < out.length && /\s/.test(out[lookahead])) lookahead += 1;
+      if (out[lookahead] === "}" || out[lookahead] === "]") continue;
+    }
+    cleaned += ch;
+  }
+  return cleaned;
+};
+var isRecord = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+var sanitizeConfigBaseUrl = (raw) => {
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  try {
+    const parsed = new URL(raw.trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return normalizeRelayUrl(parsed.toString());
+  } catch {
+    try {
+      return normalizeRelayUrl(raw.trim());
+    } catch {
+      return null;
+    }
+  }
+};
+var extractLiteralKey = (raw) => {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed || /^\{env:[^}]+\}$/i.test(trimmed) || /^\$\{[^}]+\}$/.test(trimmed)) return null;
+  return trimmed;
+};
+var resolveOpencodeConfigDir = (homeDir, env = process.env) => {
+  if (env.OPENCODE_CONFIG_DIR && env.OPENCODE_CONFIG_DIR.trim()) {
+    return env.OPENCODE_CONFIG_DIR.trim();
+  }
+  if (env.XDG_CONFIG_HOME && env.XDG_CONFIG_HOME.trim()) {
+    return path.join(env.XDG_CONFIG_HOME.trim(), "opencode");
+  }
+  return path.join(homeDir, ".config", "opencode");
+};
+var readOpencodeProviderConfigs = (configDir) => {
+  const merged = /* @__PURE__ */ new Map();
+  for (const filename of ["opencode.json", "opencode.jsonc"]) {
+    const fullPath = path.join(configDir, filename);
+    let raw;
+    try {
+      raw = fs.readFileSync(fullPath, "utf8");
+    } catch {
+      continue;
+    }
+    let doc;
+    try {
+      doc = JSON.parse(stripJsonc(raw));
+    } catch {
+      continue;
+    }
+    if (!isRecord(doc)) continue;
+    for (const rootKey of ["provider", "providers"]) {
+      const section = doc[rootKey];
+      if (!isRecord(section)) continue;
+      for (const [id, entry] of Object.entries(section)) {
+        if (!VALID_PROVIDER_ID.test(id) || !isRecord(entry)) continue;
+        const options = isRecord(entry.options) ? entry.options : null;
+        const settings = isRecord(entry.settings) ? entry.settings : null;
+        const previous = merged.get(id);
+        const name = typeof entry.name === "string" && entry.name.trim() ? entry.name.trim().slice(0, 60) : previous?.name ?? id;
+        const rawUrl = settings?.baseURL ?? settings?.baseUrl ?? options?.baseURL ?? options?.baseUrl ?? entry.api;
+        const baseUrl = sanitizeConfigBaseUrl(rawUrl) ?? previous?.baseUrl ?? null;
+        const inlineApiKey = extractLiteralKey(settings?.apiKey ?? options?.apiKey ?? entry.apiKey) ?? previous?.inlineApiKey ?? null;
+        merged.set(id, { id, name, baseUrl, inlineApiKey });
+      }
+    }
+  }
+  return merged;
+};
+var listOpencodeProviderCandidates = (configs, credentialIds) => {
+  const hasCredSet = new Set(credentialIds);
+  const allIds = /* @__PURE__ */ new Set([...configs.keys(), ...hasCredSet]);
+  const list = [];
+  for (const id of allIds) {
+    if (!VALID_PROVIDER_ID.test(id)) continue;
+    const cfg = configs.get(id);
+    const hasCredential = hasCredSet.has(id) || Boolean(cfg?.inlineApiKey);
+    const baseUrl = cfg?.baseUrl ?? null;
+    const isCustomConfig = Boolean(cfg && baseUrl && !NATIVE_USAGE_PROVIDER_IDS.has(id));
+    if (!hasCredential && !baseUrl) continue;
+    list.push({
+      id,
+      name: cfg?.name ?? id,
+      baseUrl,
+      hasCredential,
+      isCustomConfig
+    });
+  }
+  return list.sort((a, b) => {
+    if (a.isCustomConfig !== b.isCustomConfig) return a.isCustomConfig ? -1 : 1;
+    if (a.hasCredential !== b.hasCredential) return a.hasCredential ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+};
+
 // src/service/quota.ts
 var MAX_WINDOWS = 32;
 var MAX_LABEL = 128;
 var MAX_ERROR = 2e3;
-var isRecord = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+var isRecord2 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
 var truncate = (value, max = MAX_LABEL) => value.length > max ? `${value.slice(0, max - 1)}\u2026` : value;
 var readQuotaRequest = (body) => {
-  if (!isRecord(body)) return null;
+  if (!isRecord2(body)) return null;
   if (body.v !== 1 || body.method !== "usage.read") return null;
   if (typeof body.requestId !== "string" || !body.requestId || body.requestId.length > 200) return null;
   if (typeof body.provider !== "string" || !body.provider || body.provider.length > 128) return null;
   const input = body.input;
-  if (!isRecord(input) || !isRecord(input.credentials)) return null;
-  if (!Object.values(input.credentials).every(isRecord)) return null;
+  if (!isRecord2(input) || !isRecord2(input.credentials)) return null;
+  if (!Object.values(input.credentials).every(isRecord2)) return null;
   return {
     requestId: body.requestId,
     provider: body.provider,
@@ -251,7 +454,7 @@ var readQuotaRequest = (body) => {
   };
 };
 var quotaCredential = (value) => {
-  if (!isRecord(value)) return null;
+  if (!isRecord2(value)) return null;
   if (value.type === "api" && typeof value.key === "string" && value.key) {
     return { key: value.key, kind: "api" };
   }
@@ -336,13 +539,13 @@ if (!port || !token) {
   process.exit(1);
 }
 var HOME = os.homedir();
-var OPENCODE_DATA_DIR = path.join(HOME, ".local", "share", "opencode");
-var OPENCODE_DB_FILE = path.join(
+var OPENCODE_DATA_DIR = path2.join(HOME, ".local", "share", "opencode");
+var OPENCODE_DB_FILE = path2.join(
   OPENCODE_DATA_DIR,
   process.env.OPENCODE_DB && process.env.OPENCODE_DB !== ":memory:" ? process.env.OPENCODE_DB : "opencode.db"
 );
-var CONFIG_DIR = path.join(HOME, ".config", "openchamber", "balance");
-var CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+var CONFIG_DIR = path2.join(HOME, ".config", "openchamber", "balance");
+var CONFIG_FILE = path2.join(CONFIG_DIR, "config.json");
 var REQUEST_TIMEOUT_MS = 8e3;
 var projectCredential = (raw) => {
   let value = raw;
@@ -355,10 +558,10 @@ var projectCredential = (raw) => {
   }
   if (!value || typeof value !== "object") return null;
   const record = value;
-  if (record.type === "key" && typeof record.key === "string") return { key: record.key, kind: "api" };
-  if (record.type === "oauth" && typeof record.access === "string") return { key: record.access, kind: "oauth" };
-  if (typeof record.key === "string") return { key: record.key, kind: "api" };
-  if (typeof record.access === "string") return { key: record.access, kind: "oauth" };
+  if (record.type === "key" && typeof record.key === "string" && record.key) return { key: record.key, kind: "api" };
+  if (record.type === "oauth" && typeof record.access === "string" && record.access) return { key: record.access, kind: "oauth" };
+  if (typeof record.key === "string" && record.key) return { key: record.key, kind: "api" };
+  if (typeof record.access === "string" && record.access) return { key: record.access, kind: "oauth" };
   return null;
 };
 var databaseSyncPromise = null;
@@ -368,10 +571,10 @@ var loadDatabaseSync = () => {
   }
   return databaseSyncPromise;
 };
-var readCredentials = async () => {
+var readStoreCredentials = async () => {
   const result = {};
   const DatabaseSync = await loadDatabaseSync();
-  if (DatabaseSync && fs.existsSync(OPENCODE_DB_FILE)) {
+  if (DatabaseSync && fs2.existsSync(OPENCODE_DB_FILE)) {
     let db = null;
     try {
       db = new DatabaseSync(OPENCODE_DB_FILE, { readOnly: true });
@@ -395,12 +598,22 @@ var readCredentials = async () => {
     }
   }
   try {
-    const legacy = JSON.parse(fs.readFileSync(path.join(OPENCODE_DATA_DIR, "auth.json"), "utf8"));
+    const legacy = JSON.parse(fs2.readFileSync(path2.join(OPENCODE_DATA_DIR, "auth.json"), "utf8"));
     for (const [id, entry] of Object.entries(legacy)) {
       const credential = projectCredential(entry);
       if (credential) result[id] = credential;
     }
   } catch {
+  }
+  return result;
+};
+var readCredentials = async () => {
+  const result = await readStoreCredentials();
+  const configs = readOpencodeProviderConfigs(resolveOpencodeConfigDir(HOME));
+  for (const [id, cfg] of configs.entries()) {
+    if (!(id in result) && cfg.inlineApiKey) {
+      result[id] = { key: cfg.inlineApiKey, kind: "api" };
+    }
   }
   return result;
 };
@@ -447,14 +660,23 @@ var parseStoredRelay = (value) => {
   if (!value || typeof value !== "object") throw new Error();
   const record = value;
   if (typeof record.id !== "string" || typeof record.name !== "string" || typeof record.baseUrl !== "string" || typeof record.apiKey !== "string") throw new Error();
+  const providerId = record.providerId === void 0 || record.providerId === "" ? void 0 : typeof record.providerId === "string" && VALID_PROVIDER_ID.test(record.providerId) ? record.providerId : (() => {
+    throw new Error();
+  })();
+  const enabled = record.enabled === void 0 ? true : Boolean(record.enabled);
   const kind = record.kind === "custom" ? "custom" : "auto";
-  if (kind === "auto") return { id: record.id, name: record.name, baseUrl: record.baseUrl, apiKey: record.apiKey, kind };
-  return {
+  const base = {
     id: record.id,
     name: record.name,
     baseUrl: record.baseUrl,
     apiKey: record.apiKey,
-    kind,
+    ...providerId ? { providerId } : {},
+    enabled,
+    kind
+  };
+  if (kind === "auto") return base;
+  return {
+    ...base,
     custom: parseStoredCustom(record.custom)
   };
 };
@@ -464,10 +686,16 @@ var RequestError = class extends Error {
     this.status = status;
   }
 };
+var CustomMappingTestError = class extends Error {
+  constructor(message, raw) {
+    super(message);
+    this.raw = raw;
+  }
+};
 var readConfig = () => {
   let raw;
   try {
-    raw = fs.readFileSync(CONFIG_FILE, "utf8");
+    raw = fs2.readFileSync(CONFIG_FILE, "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return { relays: [] };
     throw new RequestError(500, "\u65E0\u6CD5\u8BFB\u53D6\u63A5\u53E3\u914D\u7F6E\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u6743\u9650");
@@ -483,14 +711,14 @@ var readConfig = () => {
   }
 };
 var writeConfig = (config) => {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 448 });
+  fs2.mkdirSync(CONFIG_DIR, { recursive: true, mode: 448 });
   const temporary = `${CONFIG_FILE}.${randomUUID()}.tmp`;
   try {
-    fs.writeFileSync(temporary, JSON.stringify(config, null, 2), { mode: 384 });
-    fs.renameSync(temporary, CONFIG_FILE);
+    fs2.writeFileSync(temporary, JSON.stringify(config, null, 2), { mode: 384 });
+    fs2.renameSync(temporary, CONFIG_FILE);
   } catch {
     try {
-      fs.unlinkSync(temporary);
+      fs2.unlinkSync(temporary);
     } catch {
     }
     throw new RequestError(500, "\u4FDD\u5B58\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u914D\u7F6E\u76EE\u5F55\u7684\u5199\u5165\u6743\u9650");
@@ -604,9 +832,10 @@ var parseDashboardBilling = (subscription, usage) => {
   const windows = used === null ? [] : [makeWindow("billing", "\u989D\u5EA6", limit > 0 ? used / limit * 100 : 0, null, `$${used.toFixed(2)} / $${limit.toFixed(2)}`)];
   return { plan: "\u6309\u91CF\u4ED8\u8D39", balance: makeBalance(used === null ? null : limit - used, "USD"), windows, detail: used === null ? "\u63A5\u53E3\u672A\u63D0\u4F9B\u5DF2\u7528\u91CF\uFF0C\u6682\u65E0\u6CD5\u8BA1\u7B97\u5269\u4F59\u4F59\u989D" : null };
 };
-var fetchRelay = async (relay) => {
+var fetchRelay = async (relay, apiKey) => {
   const base = normalizeRelayUrl(relay.baseUrl);
   const deadline = AbortSignal.timeout(12e3);
+  const headers = { Accept: "application/json", Authorization: `Bearer ${apiKey}` };
   const query = async (url) => {
     try {
       return await fetchJson(url, headers, deadline);
@@ -615,7 +844,6 @@ var fetchRelay = async (relay) => {
       return { ok: false, status: 0, body: null };
     }
   };
-  const headers = { Accept: "application/json", Authorization: `Bearer ${relay.apiKey}` };
   const usage = await query(`${base}/v1/usage`);
   if (usage.ok && usage.body && typeof usage.body === "object") {
     const record = usage.body;
@@ -646,7 +874,9 @@ var fetchRelay = async (relay) => {
       };
     }
   }
-  throw new Error([usage.status, subscription.status, newApi.status].includes(401) ? "\u8BA4\u8BC1\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5 API Key \u662F\u5426\u6709\u6548" : [usage.status, subscription.status, newApi.status].includes(403) ? "\u5F53\u524D Key \u6CA1\u6709\u67E5\u8BE2\u4F59\u989D\u7684\u6743\u9650" : "\u65E0\u6CD5\u8BC6\u522B\u4F59\u989D\u63A5\u53E3\uFF0C\u8BF7\u68C0\u67E5\u670D\u52A1\u5730\u5740\u53CA\u7AD9\u70B9\u662F\u5426\u652F\u6301\u4F59\u989D\u67E5\u8BE2");
+  throw new Error(
+    [usage.status, subscription.status, newApi.status].includes(401) ? "\u8BA4\u8BC1\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5 API Key \u662F\u5426\u6709\u6548" : [usage.status, subscription.status, newApi.status].includes(403) ? "\u5F53\u524D Key \u6CA1\u6709\u67E5\u8BE2\u4F59\u989D\u7684\u6743\u9650\uFF08\u90E8\u5206\u4E2D\u8F6C\u7AD9\u63A8\u7406\u5BC6\u94A5\u4E0E\u8D26\u5355\u67E5\u8BE2\u4EE4\u724C\u5206\u79BB\uFF0C\u53EF\u5728\u7F16\u8F91\u4E2D\u5355\u72EC\u586B\u5199\u67E5\u8BE2\u5BC6\u94A5\uFF09" : "\u65E0\u6CD5\u8BC6\u522B\u4F59\u989D\u63A5\u53E3\uFF0C\u8BF7\u68C0\u67E5\u670D\u52A1\u5730\u5740\u53CA\u7AD9\u70B9\u662F\u5426\u652F\u6301\u4F59\u989D\u67E5\u8BE2"
+  );
 };
 var parseHeaderLines = (raw) => {
   const headers = {};
@@ -664,13 +894,25 @@ var parseHeaderLines = (raw) => {
   }
   return headers;
 };
-var fetchCustom = async (relay) => {
+var redact = (text, secret) => secret ? text.split(secret).join("{key}") : text;
+var sanitizeRawBody = (raw, secret) => {
+  if (!secret || raw == null || typeof raw !== "object") return raw;
+  try {
+    return JSON.parse(redact(JSON.stringify(raw), secret));
+  } catch {
+    return void 0;
+  }
+};
+var fetchCustom = async (relay, apiKey, options = {}) => {
   const custom = relay.custom;
   if (!custom) throw new Error("\u81EA\u5B9A\u4E49\u63A5\u53E3\u7F3A\u5C11\u8BF7\u6C42\u914D\u7F6E");
-  validateCustomRequest(custom);
+  validateCustomRequest(custom, { allowEmptyMapping: options.testMode === true });
+  if (apiKey && (custom.headers.includes(apiKey) || custom.body.includes(apiKey))) {
+    throw new Error("\u4E0D\u8981\u628A API Key \u5199\u8FDB\u989D\u5916\u8BF7\u6C42\u5934\u6216\u8BF7\u6C42\u4F53");
+  }
   const headers = { Accept: "application/json", ...parseHeaderLines(custom.headers) };
   const authHeader = custom.authHeader.trim();
-  if (authHeader) headers[authHeader] = custom.authScheme === "bearer" ? `Bearer ${relay.apiKey}` : relay.apiKey;
+  if (authHeader && apiKey) headers[authHeader] = custom.authScheme === "bearer" ? `Bearer ${apiKey}` : apiKey;
   if (custom.method === "POST" && custom.body.trim() && !Object.keys(headers).some((name) => name.toLowerCase() === "content-type")) {
     headers["Content-Type"] = "application/json";
   }
@@ -679,15 +921,41 @@ var fetchCustom = async (relay) => {
     body: custom.method === "POST" && custom.body.trim() ? custom.body : void 0
   });
   if (!answer.ok) throw new Error(`\u81EA\u5B9A\u4E49\u63A5\u53E3\u8FD4\u56DE HTTP ${answer.status}`);
-  return { ...parseCustomContribution(answer.body, custom.mapping), raw: answer.body };
+  const safeRaw = sanitizeRawBody(answer.body, apiKey);
+  if (options.testMode && !hasAnyCustomMapping(custom.mapping)) {
+    throw new CustomMappingTestError("\u5DF2\u83B7\u53D6\u63A5\u53E3\u54CD\u5E94\uFF0C\u8BF7\u5728\u4E0B\u65B9\u70B9\u9009\u5B57\u6BB5\u6216\u586B\u5199 JSON \u8DEF\u5F84\u540E\u4FDD\u5B58", safeRaw);
+  }
+  try {
+    return { ...parseCustomContribution(answer.body, custom.mapping), raw: safeRaw };
+  } catch (error) {
+    if (options.testMode && safeRaw && typeof safeRaw === "object") {
+      throw new CustomMappingTestError(describeError(error), safeRaw);
+    }
+    throw error;
+  }
 };
-var fetchConnection = (relay) => relay.kind === "custom" ? fetchCustom(relay) : fetchRelay(relay);
+var resolveRelayApiKey = (relay, credentials, options = {}) => {
+  if (relay.apiKey) return relay.apiKey;
+  if (relay.providerId) {
+    const found = credentials[relay.providerId];
+    if (found?.key) return found.key;
+    if (options.quotaMode) return null;
+    throw new Error(`\u672A\u5728\u4F9B\u5E94\u5546\u9875\u9762\u627E\u5230\u201C${relay.providerId}\u201D\u7684\u5BC6\u94A5\uFF0C\u8BF7\u5148\u5728 OpenChamber \u4F9B\u5E94\u5546\u9875\u9762\u914D\u7F6E\u6216\u6539\u7528\u5355\u72EC\u5BC6\u94A5`);
+  }
+  if (options.quotaMode) return null;
+  throw new Error("\u8BF7\u586B\u5199 API Key");
+};
+var fetchConnection = async (relay, credentials, options = {}) => {
+  const apiKey = resolveRelayApiKey(relay, credentials, options);
+  if (apiKey === null) return { configured: false };
+  return relay.kind === "custom" ? fetchCustom(relay, apiKey, { testMode: options.testMode }) : fetchRelay(relay, apiKey);
+};
 var BUILTIN_PROVIDERS = [
   { id: "command-code", name: "Command Code", credentialIds: ["command-code", "commandcode"], fetch: fetchCommandCode },
   { id: "stepfun", name: "StepFun", credentialIds: ["stepfun-step-plan", "stepfun"], fetch: fetchStepfun }
 ];
-var buildProviders = async (previous, credentials) => {
-  const relays = readConfig().relays;
+var buildProviders = async (previous, credentials, options = {}) => {
+  const relays = readConfig().relays.filter((relay) => relay.enabled !== false);
   const jobs = [
     ...BUILTIN_PROVIDERS.map((provider) => ({
       id: provider.id,
@@ -697,7 +965,7 @@ var buildProviders = async (previous, credentials) => {
     ...relays.map((relay) => ({
       id: `relay:${relay.id}`,
       name: relay.name,
-      run: () => fetchConnection(relay)
+      run: () => fetchConnection(relay, credentials, { quotaMode: options.quotaMode })
     }))
   ];
   const providers = await Promise.all(
@@ -734,30 +1002,33 @@ var buildQuotaData = async (raw) => {
       const credential = quotaCredential(value);
       if (credential) credentials[id] = credential;
     }
-    const relays = readConfig().relays;
-    const configured = relays.length > 0 || BUILTIN_PROVIDERS.some(
+    const activeRelays = readConfig().relays.filter((relay) => relay.enabled !== false);
+    const quotaRelays = activeRelays.filter(
+      (relay) => relay.apiKey.length > 0 || Boolean(relay.providerId && credentials[relay.providerId]?.key)
+    );
+    const configured = quotaRelays.length > 0 || BUILTIN_PROVIDERS.some(
       (provider) => firstCredential(credentials, provider.credentialIds) !== null
     );
     if (!configured) {
       return {
         ok: false,
         configured: true,
-        error: "\u5728\u300C\u4F59\u989D\u300D\u9762\u677F\u6DFB\u52A0\u63A5\u53E3\uFF0C\u6216\u5728 OpenChamber Providers \u767B\u5F55 Command Code/StepFun",
+        error: activeRelays.some((relay) => Boolean(relay.providerId)) ? "\u590D\u7528\u4F9B\u5E94\u5546\u5BC6\u94A5\u7684\u63A5\u53E3\u5DF2\u5728\u300C\u4F59\u989D\u300D\u4FA7\u680F\u4E0E\u5DE5\u4F5C\u72B6\u6001\u4E2D\u751F\u6548" : "\u5728\u300C\u4F59\u989D\u300D\u9762\u677F\u6DFB\u52A0\u63A5\u53E3\uFF0C\u6216\u5728 OpenChamber Providers \u767B\u5F55 Command Code/StepFun",
         usage: null
       };
     }
-    const providers = await buildProviders([], credentials);
+    const providers = await buildProviders([], credentials, { quotaMode: true });
     return buildQuotaUsage({ providers, configured });
   } catch (error) {
     return { ok: false, configured: true, error: describeError(error), usage: null };
   }
 };
 var balanceCache = createBalanceCache(buildBalances);
-var describeError = (error) => {
+function describeError(error) {
   if (error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)) return "\u67E5\u8BE2\u8D85\u65F6\uFF0C\u8BF7\u7A0D\u540E\u5237\u65B0";
   if (error instanceof TypeError) return "\u65E0\u6CD5\u8FDE\u63A5\u670D\u52A1\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC\u6216\u670D\u52A1\u5730\u5740";
   return error instanceof Error ? error.message : "\u67E5\u8BE2\u5931\u8D25\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5";
-};
+}
 var json = (res, status, body) => {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
@@ -787,12 +1058,13 @@ var readBody = (req) => new Promise((resolve, reject) => {
     }
   });
 });
-var redact = (text, secret) => secret ? text.split(secret).join("{key}") : text;
 var publicRelay = (relay) => ({
   id: relay.id,
   name: relay.name,
   baseUrl: relay.baseUrl,
   hasKey: relay.apiKey.length > 0,
+  ...relay.providerId ? { providerId: relay.providerId } : {},
+  enabled: relay.enabled !== false,
   kind: relay.kind ?? "auto",
   ...relay.kind === "custom" && relay.custom ? {
     custom: {
@@ -814,7 +1086,7 @@ var nestedText = (record, key, max, fallback = "") => {
   if (value.length > max) throw new RequestError(400, `${key} \u957F\u5EA6\u8D85\u51FA\u9650\u5236`);
   return value;
 };
-var customRequest = (body, apiKey) => {
+var customRequest = (body, apiKey, options = {}) => {
   const raw = body.custom;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new RequestError(400, "\u7F3A\u5C11\u81EA\u5B9A\u4E49\u63A5\u53E3\u914D\u7F6E");
   const record = raw;
@@ -840,7 +1112,7 @@ var customRequest = (body, apiKey) => {
     }
   };
   try {
-    validateCustomRequest(request);
+    validateCustomRequest(request, options);
   } catch (error) {
     throw new RequestError(400, error instanceof Error ? error.message : "\u81EA\u5B9A\u4E49\u63A5\u53E3\u914D\u7F6E\u4E0D\u6B63\u786E");
   }
@@ -849,7 +1121,7 @@ var customRequest = (body, apiKey) => {
   }
   return request;
 };
-var resolveRelay = (body, config) => {
+var resolveRelay = (body, config, options = {}) => {
   const id = field(body, "id", 128);
   const stored = id ? config.relays.find((relay) => relay.id === id) : void 0;
   if (id && !stored) throw new RequestError(404, "\u6B64\u63A5\u53E3\u5DF2\u79FB\u9664\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00\u7BA1\u7406\u9875\u9762");
@@ -860,19 +1132,33 @@ var resolveRelay = (body, config) => {
   } catch (error) {
     throw new RequestError(400, describeError(error));
   }
-  const typedKey = field(body, "apiKey", 4096);
-  const originChanged = stored ? stored.kind === "custom" || kind === "custom" ? changesEndpointOrigin(stored.baseUrl, baseUrl) : changesRelayOrigin(stored.baseUrl, baseUrl) : false;
-  if (!typedKey && stored && originChanged) {
-    throw new RequestError(400, "\u66F4\u6362\u63A5\u53E3\u5730\u5740\u65F6\uFF0C\u8BF7\u91CD\u65B0\u586B\u5199 API Key");
+  const rawProviderId = field(body, "providerId", 120);
+  if (rawProviderId && !VALID_PROVIDER_ID.test(rawProviderId)) {
+    throw new RequestError(400, "\u4F9B\u5E94\u5546\u6807\u8BC6\u683C\u5F0F\u4E0D\u6B63\u786E");
   }
-  const apiKey = typedKey || stored?.apiKey || "";
-  if (!apiKey) throw new RequestError(400, "\u8BF7\u586B\u5199 API Key");
-  const custom = kind === "custom" ? customRequest(body, apiKey) : void 0;
+  let apiKey = "";
+  let providerId;
+  if (rawProviderId) {
+    providerId = rawProviderId;
+    apiKey = "";
+  } else {
+    const typedKey = field(body, "apiKey", 4096);
+    const originChanged = stored ? stored.kind === "custom" || kind === "custom" ? changesEndpointOrigin(stored.baseUrl, baseUrl) : changesRelayOrigin(stored.baseUrl, baseUrl) : false;
+    if (!typedKey && stored?.apiKey && originChanged) {
+      throw new RequestError(400, "\u66F4\u6362\u63A5\u53E3\u5730\u5740\u65F6\uFF0C\u8BF7\u91CD\u65B0\u586B\u5199 API Key");
+    }
+    apiKey = typedKey || stored?.apiKey || "";
+    if (!apiKey) throw new RequestError(400, "\u8BF7\u586B\u5199 API Key");
+  }
+  const enabled = typeof body.enabled === "boolean" ? body.enabled : stored?.enabled ?? true;
+  const custom = kind === "custom" ? customRequest(body, apiKey, { allowEmptyMapping: options.forTest === true }) : void 0;
   return {
     id: stored?.id ?? randomUUID(),
     name: field(body, "name", 60),
     baseUrl,
     apiKey,
+    ...providerId ? { providerId } : {},
+    enabled,
     kind,
     ...custom ? { custom } : {}
   };
@@ -884,6 +1170,14 @@ var handle = async (req, res) => {
     json(res, 200, { ok: true });
   } else if (url.pathname === "/balances" && req.method === "GET") {
     json(res, 200, await balanceCache.get(url.searchParams.get("refresh") === "1"));
+  } else if (url.pathname === "/opencode-providers" && req.method === "GET") {
+    const [storeCredentials, configs] = await Promise.all([
+      readStoreCredentials(),
+      Promise.resolve(readOpencodeProviderConfigs(resolveOpencodeConfigDir(HOME)))
+    ]);
+    json(res, 200, {
+      providers: listOpencodeProviderCandidates(configs, Object.keys(storeCredentials))
+    });
   } else if (url.pathname === "/quota" && req.method === "POST") {
     const body = await readBody(req);
     const request = readQuotaRequest(body);
@@ -896,18 +1190,41 @@ var handle = async (req, res) => {
     json(res, 200, { relays: readConfig().relays.map(publicRelay) });
   } else if (url.pathname === "/relays/test" && req.method === "POST") {
     const body = await readBody(req);
-    const relay = resolveRelay(body, readConfig());
+    const relay = resolveRelay(body, readConfig(), { forTest: true });
     try {
-      const contribution = await fetchConnection(relay);
+      const credentials = relay.providerId ? await readCredentials() : {};
+      const contribution = await fetchConnection(relay, credentials, { testMode: true });
       json(res, 200, { ok: true, baseUrl: relay.baseUrl, ...contribution });
     } catch (error) {
-      json(res, 200, { ok: false, error: describeError(error) });
+      if (error instanceof CustomMappingTestError) {
+        json(res, 200, { ok: false, error: error.message, raw: error.raw });
+      } else {
+        json(res, 200, { ok: false, error: describeError(error) });
+      }
     }
+  } else if (url.pathname === "/relays/toggle" && req.method === "POST") {
+    const body = await readBody(req);
+    const id = field(body, "id", 128);
+    if (!id) throw new RequestError(400, "\u7F3A\u5C11\u63A5\u53E3\u7F16\u53F7");
+    const config = readConfig();
+    const target = config.relays.find((relay) => relay.id === id);
+    if (!target) throw new RequestError(404, "\u6B64\u63A5\u53E3\u5DF2\u79FB\u9664\uFF0C\u8BF7\u91CD\u65B0\u6253\u5F00\u7BA1\u7406\u9875\u9762");
+    target.enabled = Boolean(body.enabled);
+    writeConfig(config);
+    balanceCache.invalidate(`relay:${id}`);
+    json(res, 200, { relays: config.relays.map(publicRelay) });
   } else if (url.pathname === "/relays" && req.method === "POST") {
     const body = await readBody(req);
     const config = readConfig();
     const relay = resolveRelay(body, config);
     if (!relay.name) throw new RequestError(400, "\u8BF7\u586B\u5199\u63A5\u53E3\u540D\u79F0");
+    if (relay.providerId && relay.kind === "custom" && relay.custom) {
+      const credentials = await readCredentials();
+      const resolvedKey = credentials[relay.providerId]?.key ?? "";
+      if (resolvedKey && (relay.custom.headers.includes(resolvedKey) || relay.custom.body.includes(resolvedKey))) {
+        throw new RequestError(400, "\u4E0D\u8981\u628A API Key \u5199\u8FDB\u989D\u5916\u8BF7\u6C42\u5934\u6216\u8BF7\u6C42\u4F53");
+      }
+    }
     const index = config.relays.findIndex((item) => item.id === relay.id);
     if (index >= 0) config.relays[index] = relay;
     else config.relays.push(relay);

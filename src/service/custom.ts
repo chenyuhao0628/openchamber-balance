@@ -37,14 +37,24 @@ const numberAt = (value: unknown, path: string): number | null => {
   return asNumber(readPath(value, path));
 };
 
-export const validateCustomRequest = (request: CustomRequest): void => {
+export const hasAnyCustomMapping = (mapping: CustomMapping): boolean => Boolean(
+  mapping.balancePath.trim()
+  || mapping.usedPath.trim()
+  || mapping.limitPath.trim()
+  || mapping.usedPercentPath.trim(),
+);
+
+export const validateCustomRequest = (
+  request: CustomRequest,
+  options: { allowEmptyMapping?: boolean } = {},
+): void => {
   if (request.method !== 'GET' && request.method !== 'POST') throw new Error('请求方式必须是 GET 或 POST');
   if (request.authHeader.trim().length > 100) throw new Error('认证请求头名称过长');
   if (request.headers.length > 8_000) throw new Error('额外请求头过长');
   if (request.body.length > 16_000) throw new Error('请求体过长');
   if (request.method === 'GET' && request.body.trim()) throw new Error('GET 请求不能包含请求体。');
   const { mapping } = request;
-  if (!mapping.balancePath.trim() && !mapping.usedPath.trim() && !mapping.limitPath.trim() && !mapping.usedPercentPath.trim()) {
+  if (!options.allowEmptyMapping && !hasAnyCustomMapping(mapping)) {
     throw new Error('请至少填写余额字段或额度字段。');
   }
   if (mapping.balancePath.length > 300 || mapping.usedPath.length > 300 || mapping.limitPath.length > 300
@@ -65,8 +75,8 @@ export const parseCustomContribution = (body: unknown, mapping: CustomMapping): 
   const windows: UsageWindow[] = [];
 
   let usedPercent = numberAt(body, mapping.usedPercentPath);
-  let used = numberAt(body, mapping.usedPath);
-  let limit = numberAt(body, mapping.limitPath);
+  const used = numberAt(body, mapping.usedPath);
+  const limit = numberAt(body, mapping.limitPath);
   if (usedPercent === null && used !== null && limit !== null && limit > 0) usedPercent = (used / limit) * 100;
 
   if (usedPercent !== null) {
