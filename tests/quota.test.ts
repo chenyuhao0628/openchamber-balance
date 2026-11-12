@@ -117,7 +117,7 @@ test("the manifest declares the quota role for the 2.7 host", () => {
       };
     };
   };
-  assert.equal(manifest.version, "0.4.0");
+  assert.equal(manifest.version, "0.4.1");
   assert.equal(manifest.openchamber.engines.openchamber, ">=2.7.0");
   assert.deepEqual(manifest.openchamber.contributes.service.provides, ["quota"]);
   assert.deepEqual(manifest.openchamber.contributes.quota?.providers, [

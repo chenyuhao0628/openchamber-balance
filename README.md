@@ -15,6 +15,7 @@ English | [简体中文](#简体中文)
 - Custom balance APIs: fill in the request URL, auth header and JSON field paths (or click paths directly from the test response JSON) to add a provider without changing code.
 - OpenChamber 2.7 quota provider: balances also appear in the Usage page, the header, Work Status and the desktop tray.
 - Cached results, merged concurrent refreshes and immediate cache invalidation after a relay change.
+- Work Status Refresh / Manage republish after a project or session directory change instead of disappearing until the section is folded and reopened.
 - Light, dark and narrow layouts that follow the host theme.
 
 ### Screenshot
@@ -45,9 +46,11 @@ Requires OpenChamber **2.7.0 or newer**; tested on 2.7.0. The extension runs a l
 
 OpenChamber 余额扩展，在**工作状态分区**与右侧「**余额**」面板中汇总 AI 服务的余额、额度和重置时间。
 
-当前版本 **0.4.0**，本说明于 **2026-11-11** 对照源码和本机宿主核对。面板与工作状态文案跟随宿主语言在简体中文和英文间切换。清单要求 OpenChamber `>=2.7.0`，SDK 依赖为 **2.7.0**；这些声明不等于已测试所有宿主版本。
+当前版本 **0.4.1**，本说明于 **2026-11-12** 对照源码和本机宿主核对。面板与工作状态文案跟随宿主语言在简体中文和英文间切换。清单要求 OpenChamber `>=2.7.0`，SDK 依赖为 **2.7.0**；这些声明不等于已测试所有宿主版本。
 
 ## 使用体验
+
+0.4.1 修复工作状态分区标题行控件在目录变化后偶尔消失、需要折叠重开才能恢复的问题：宿主清空标题行后，扩展会在新的 `ready` 或 `directory` 事件中重新发布「刷新 / 管理」。
 
 0.4.0 支持**直接发现并只读复用「供应商」页面已配置的自定义 Provider 与密钥**：服务只读扫描 `~/.config/opencode/opencode.json(c)` 中的自定义 `provider` 与 OpenCode 凭据库，面板「接口」页默认优先推荐一键关联绑定，无需重复粘贴 API Key（针对对话 `sk-` Key 与账单管理令牌分离的场景仍保留可选独立查询密钥折叠模式）；同时新增接口启停开关、克隆配置、单卡片独立重试，以及自定义接口测试响应的交互式 JSON 路径点选填入。
 

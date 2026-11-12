@@ -35,7 +35,7 @@
 ## 标题行
 
 1. 分区标题、图标和折叠箭头由宿主提供，扩展正文不要再放「余额」标题。
-2. 支持 `features.statusControls` 时，在 `host.onReady` 后用 `setStatusControls` 注册：
+2. 支持 `features.statusControls` 时，在 `host.onReady` 后用 `setStatusControls` 注册；宿主在目录变化后会清空标题行控件，需在 `onReady` / `onDirectory` 时清空本地指纹并重新发布，不能只在首次挂载时注册一次：
    - `刷新`：`kind: "button"`，加载中禁用。
    - `管理`：`kind: "button"`，未初始化时禁用。
 3. `onStatusControl` 中按 `id` 分发；刷新复用面板的强制刷新，管理复用 `openManager` 打开同一个余额侧栏。

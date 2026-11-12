@@ -94,6 +94,11 @@ if (IS_SECTION) {
     if (event.id === 'refresh') refreshBalances();
     else if (event.id === 'manage') openBalanceManager();
   });
+  host.onDirectory(() => {
+    if (!initialized) return;
+    statusControlSignature = '';
+    syncStatusControls();
+  });
 }
 
 const describeError = (error: unknown): string => {
@@ -1369,6 +1374,7 @@ host.onReady((context) => {
   statusControlsSupported = IS_SECTION && context.features?.statusControls === true;
   if (IS_SECTION && !statusControlsSupported && !top.isConnected) app.prepend(top);
   if (initialized) {
+    statusControlSignature = '';
     if (changed) { notice = null; localize(); }
     else render();
     return;
