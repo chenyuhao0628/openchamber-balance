@@ -36,7 +36,7 @@ In OpenChamber, open **Settings → Extensions → Add extension** and paste:
 https://github.com/chenyuhao0628/openchamber-balance
 ```
 
-Requires OpenChamber **2.7.0 or newer**; tested on 2.7.0. The extension runs a local service on `127.0.0.1` and checks the host Bearer token. Saved relay keys are never returned by the list or balance APIs.
+Requires OpenChamber **2.7.0 or newer** (built with SDK **2.7.2**). The extension runs a local service on `127.0.0.1` and checks the host Bearer token. Saved relay keys are never returned by the list or balance APIs.
 
 > The panel and Work Status copy follow the host language (Simplified Chinese or English). The full Chinese documentation is below.
 
@@ -46,9 +46,11 @@ Requires OpenChamber **2.7.0 or newer**; tested on 2.7.0. The extension runs a l
 
 OpenChamber 余额扩展，在**工作状态分区**与右侧「**余额**」面板中汇总 AI 服务的余额、额度和重置时间。
 
-当前版本 **0.4.1**，本说明于 **2026-11-12** 对照源码和本机宿主核对。面板与工作状态文案跟随宿主语言在简体中文和英文间切换。清单要求 OpenChamber `>=2.7.0`，SDK 依赖为 **2.7.0**；这些声明不等于已测试所有宿主版本。
+当前版本 **0.4.2**，本说明于 **2026-11-16** 对照源码和 OpenChamber 2.7.2 / SDK 2.7.2 规范核对。面板与工作状态文案跟随宿主语言在简体中文和英文间切换。清单要求 OpenChamber `>=2.7.0`，SDK 依赖为 **2.7.2**；这些声明不等于已测试所有宿主版本。
 
 ## 使用体验
+
+0.4.2 将 `@openchamber/sdk` 升级至 `2.7.2`（支持宿主字体缩放 `len()` 几何样式与最新校验契约）。
 
 0.4.1 修复工作状态分区标题行控件在目录变化后偶尔消失、需要折叠重开才能恢复的问题：宿主清空标题行后，扩展会在新的 `ready` 或 `directory` 事件中重新发布「刷新 / 管理」。
 
